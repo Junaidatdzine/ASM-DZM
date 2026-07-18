@@ -1,8 +1,8 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ChevronRight, Pause, Play, Plus, Search, Trash2 } from 'lucide-react';
+import { AlertTriangle, ChevronRight, Pause, Play, Plus, Search, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
-import type { AdsAdGroupLive, AdsKeywordLive } from '@asm/shared';
+import { resolveAdsStatus, type AdsAdGroupLive, type AdsKeywordLive } from '@asm/shared';
 import { api, callableMessage } from '@/lib/callables';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
@@ -18,6 +18,8 @@ export interface CampaignRef {
   id: string;
   name: string;
   status: string;
+  displayStatus?: string;
+  servingStateReasons?: string[];
   dailyBudget: { amount: number; currency: string } | null;
   countries: string[];
   accountLabel?: string;
@@ -27,11 +29,39 @@ const money = (amount: number, currency = 'USD') =>
   `${currency === 'USD' ? '$' : ''}${amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}${currency !== 'USD' ? ` ${currency}` : ''}`;
 const cnt = (n: number) => n.toLocaleString('en-US');
 
-function StatusBadge({ status }: { status: string }) {
-  const s = status.toUpperCase();
-  if (s === 'ENABLED' || s === 'ACTIVE') return <Badge variant="success">Running</Badge>;
-  if (s === 'PAUSED') return <Badge variant="warning">Paused</Badge>;
-  return <Badge variant="outline">{status.toLowerCase()}</Badge>;
+/**
+ * The badge every ads entity shows. Uses Apple's real serving state
+ * (displayStatus + servingStateReasons), not just ENABLED/PAUSED — a campaign
+ * can be "enabled" while the account is on hold over billing.
+ */
+export function AdsStatusBadge({ entity }: { entity: { status: string; displayStatus?: string; servingStateReasons?: string[] } }) {
+  const resolved = resolveAdsStatus(entity);
+  if (resolved.kind === 'running') return <Badge variant="success">Running</Badge>;
+  if (resolved.kind === 'paused') return <Badge variant="warning">Paused</Badge>;
+  if (resolved.kind === 'onHold') {
+    return (
+      <Badge variant="destructive" title={resolved.reasons.join(' · ') || 'Not serving — check Apple Ads'}>
+        On hold
+      </Badge>
+    );
+  }
+  return <Badge variant="outline" title={resolved.reasons.join(' · ') || undefined}>{resolved.label}</Badge>;
+}
+
+/** Red callout listing exactly why Apple isn't serving this entity. */
+export function ServingHoldNotice({ entity, scope }: { entity: { status: string; displayStatus?: string; servingStateReasons?: string[] }; scope: string }) {
+  const resolved = resolveAdsStatus(entity);
+  if (resolved.kind !== 'onHold') return null;
+  return (
+    <div className="mb-3 flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2.5 text-[12px] text-destructive">
+      <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+      <div>
+        <span className="font-semibold">Apple has {scope} on hold — no ads are serving.</span>{' '}
+        {resolved.reasons.length > 0 ? resolved.reasons.join(' · ') : 'Check the status in Apple Ads.'}{' '}
+        <a href="https://app-ads.apple.com" target="_blank" rel="noreferrer" className="font-medium underline">Fix in Apple Ads ↗</a>
+      </div>
+    </div>
+  );
 }
 
 /** Inline "value + Save" editor for a money amount (bids, budgets). */
@@ -116,7 +146,7 @@ function AdGroupDetail({ campaign, adGroup, days }: { campaign: CampaignRef; adG
                   <tr key={k.id} className="border-b last:border-0">
                     <td className="max-w-[200px] truncate px-3 py-1.5 font-medium">{k.text}</td>
                     <td className="px-3 py-1.5"><Badge variant="outline">{k.matchType.toLowerCase()}</Badge></td>
-                    <td className="px-3 py-1.5"><StatusBadge status={k.status} /></td>
+                    <td className="px-3 py-1.5"><AdsStatusBadge entity={k} /></td>
                     <td className="px-3 py-1.5 text-right">
                       {k.bid ? (
                         <AmountEditor
@@ -263,6 +293,8 @@ export function CampaignManagerDialog({ open, onOpenChange, campaign, days }: { 
       <DialogContent wide className="max-h-[88vh] overflow-y-auto sm:max-w-3xl">
         <DialogHeader title={campaign?.name ?? 'Campaign'} description={`${campaign?.accountLabel ?? ''} · ${(campaign?.countries ?? []).join(', ') || 'all countries'}`} />
 
+        {campaign && <ServingHoldNotice entity={campaign} scope="this campaign" />}
+
         {/* Campaign-level controls */}
         <div className="mb-4 flex flex-wrap items-end gap-4 rounded-xl border bg-muted/20 p-3">
           <div>
@@ -272,7 +304,7 @@ export function CampaignManagerDialog({ open, onOpenChange, campaign, days }: { 
             ) : <div className="text-[13px] text-muted-foreground">—</div>}
           </div>
           <div className="ml-auto flex items-center gap-2">
-            <StatusBadge status={campaign?.status ?? ''} />
+            {campaign && <AdsStatusBadge entity={campaign} />}
           </div>
         </div>
 
@@ -312,7 +344,7 @@ export function CampaignManagerDialog({ open, onOpenChange, campaign, days }: { 
                       <span className="block truncate text-[11px] text-muted-foreground">{money(g.spendAmount, g.spendCurrency)} spend · {cnt(g.installs)} installs</span>
                     </span>
                   </button>
-                  <StatusBadge status={g.status} />
+                  <AdsStatusBadge entity={g} />
                   {g.defaultBid && (
                     <AmountEditor
                       label={`Default bid for ${g.name}`}

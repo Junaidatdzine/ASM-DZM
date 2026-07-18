@@ -118,6 +118,10 @@ export interface AppleAdsCampaign {
   name: string;
   status: string; // ENABLED | PAUSED
   servingStatus?: string;
+  /** RUNNING | ON_HOLD | PAUSED | DELETED — the state Apple actually serves by. */
+  displayStatus?: string;
+  /** Raw serving-state reasons (e.g. CREDIT_CARD_DECLINED). */
+  servingStateReasons?: string[];
   dailyBudget: { amount: number; currency: string } | null;
   countries: string[];
 }
@@ -132,6 +136,7 @@ function mockCampaigns(): AppleAdsCampaign[] {
       name: 'AI Detector — US Search',
       status: mockStatuses.get('mock-c1') ?? 'ENABLED',
       servingStatus: 'RUNNING',
+      displayStatus: 'RUNNING',
       dailyBudget: { amount: 40, currency: 'USD' },
       countries: ['US'],
     },
@@ -139,9 +144,22 @@ function mockCampaigns(): AppleAdsCampaign[] {
       id: 'mock-c2',
       name: 'Vocabulary — Worldwide',
       status: mockStatuses.get('mock-c2') ?? 'PAUSED',
-      servingStatus: 'CAMPAIGN_ON_HOLD',
+      servingStatus: 'NOT_RUNNING',
+      displayStatus: 'PAUSED',
+      servingStateReasons: ['PAUSED_BY_USER'],
       dailyBudget: { amount: 15, currency: 'USD' },
       countries: ['US', 'GB', 'PK'],
+    },
+    {
+      // Demoes the on-hold state Apple shows when billing breaks.
+      id: 'mock-c3',
+      name: 'Printer Utility — EU',
+      status: mockStatuses.get('mock-c3') ?? 'ENABLED',
+      servingStatus: 'NOT_RUNNING',
+      displayStatus: 'ON_HOLD',
+      servingStateReasons: ['CREDIT_CARD_DECLINED'],
+      dailyBudget: { amount: 20, currency: 'USD' },
+      countries: ['DE', 'FR'],
     },
   ];
 }
@@ -162,6 +180,8 @@ export async function appleAdsCampaigns(creds: AppleAdsCredentials): Promise<App
         name?: string;
         status?: string;
         servingStatus?: string;
+        displayStatus?: string;
+        servingStateReasons?: string[];
         dailyBudgetAmount?: { amount?: string; currency?: string } | null;
         countriesOrRegions?: string[];
       }>;
@@ -173,6 +193,8 @@ export async function appleAdsCampaigns(creds: AppleAdsCredentials): Promise<App
         name: c.name ?? String(c.id ?? ''),
         status: c.status ?? 'ENABLED',
         servingStatus: c.servingStatus,
+        displayStatus: c.displayStatus,
+        servingStateReasons: c.servingStateReasons ?? [],
         dailyBudget: c.dailyBudgetAmount?.amount
           ? { amount: Number(c.dailyBudgetAmount.amount) || 0, currency: c.dailyBudgetAmount.currency ?? 'USD' }
           : null,
@@ -301,6 +323,8 @@ export interface AppleAdsAdGroup {
   name: string;
   status: string; // ENABLED | PAUSED
   servingStatus?: string;
+  displayStatus?: string;
+  servingStateReasons?: string[];
   defaultBid: { amount: number; currency: string } | null;
 }
 export interface AppleAdsKeyword {
@@ -409,7 +433,7 @@ export async function appleAdsAdGroups(creds: AppleAdsCredentials, campaignId: s
   const out: AppleAdsAdGroup[] = [];
   for (let offset = 0; offset < 2000; offset += 200) {
     const doc = await api<{
-      data?: Array<{ id?: number; name?: string; status?: string; servingStatus?: string; defaultBidAmount?: { amount?: string; currency?: string } }>;
+      data?: Array<{ id?: number; name?: string; status?: string; servingStatus?: string; displayStatus?: string; servingStateReasons?: string[]; defaultBidAmount?: { amount?: string; currency?: string } }>;
       pagination?: { totalResults?: number };
     }>(creds, `/campaigns/${campaignId}/adgroups?limit=200&offset=${offset}`);
     for (const g of doc.data ?? []) {
@@ -419,6 +443,8 @@ export async function appleAdsAdGroups(creds: AppleAdsCredentials, campaignId: s
         name: g.name ?? String(g.id ?? ''),
         status: g.status ?? 'ENABLED',
         servingStatus: g.servingStatus,
+        displayStatus: g.displayStatus,
+        servingStateReasons: g.servingStateReasons ?? [],
         defaultBid: readMoney(g.defaultBidAmount),
       });
     }

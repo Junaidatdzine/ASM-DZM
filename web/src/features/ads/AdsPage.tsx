@@ -30,7 +30,8 @@ import { FieldHint, Label } from '@/components/ui/Label';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { Textarea } from '@/components/ui/Textarea';
 import { cn, timeAgo } from '@/lib/utils';
-import { CampaignManagerDialog, CreateCampaignDialog, type CampaignRef } from './CampaignManager';
+import { AdsStatusBadge, CampaignManagerDialog, CreateCampaignDialog, ServingHoldNotice, type CampaignRef } from './CampaignManager';
+import { resolveAdsStatus } from '@asm/shared';
 
 const RANGES = [
   { key: '7', label: '7 days' },
@@ -203,6 +204,8 @@ export function AdsPage() {
           accountId: m.accountId,
           accountLabel: m.accountLabel,
           status: 'UNKNOWN',
+          displayStatus: undefined,
+          servingStateReasons: [],
           dailyBudget: null,
           countries: [],
           spend: m.spend,
@@ -360,6 +363,12 @@ export function AdsPage() {
             )}
           </div>
 
+          {/* Billing/serving problems are account-wide — surface them before the table. */}
+          {(() => {
+            const held = liveCampaigns.find((c) => resolveAdsStatus(c).kind === 'onHold');
+            return held ? <div className="mt-5"><ServingHoldNotice entity={held} scope="campaigns in this account" /></div> : null;
+          })()}
+
           {/* Campaigns — live status + range metrics + run/pause control */}
           <div className="mt-5 overflow-x-auto rounded-xl border bg-card shadow-card">
             <div className="flex items-center justify-between border-b px-4 py-3">
@@ -401,12 +410,9 @@ export function AdsPage() {
                         <div className="truncate text-[11px] text-muted-foreground">{c.accountLabel}</div>
                       </td>
                       <td className="px-4 py-2">
-                        {c.status === 'ENABLED' ? (
-                          <Badge variant="success">Running</Badge>
-                        ) : c.status === 'PAUSED' ? (
-                          <Badge variant="warning">Paused</Badge>
-                        ) : (
-                          <Badge variant="outline">{c.status.toLowerCase()}</Badge>
+                        <AdsStatusBadge entity={c} />
+                        {resolveAdsStatus(c).reasons[0] && (
+                          <div className="mt-0.5 max-w-[180px] text-[10px] leading-tight text-destructive">{resolveAdsStatus(c).reasons[0]}</div>
                         )}
                       </td>
                       <td className="px-4 py-2 text-right tabular-nums">
@@ -440,7 +446,7 @@ export function AdsPage() {
                             <Button
                               variant="outline"
                               size="sm"
-                              onClick={() => setManageTarget({ accountId: c.accountId, id: c.id, name: c.name, status: c.status, dailyBudget: c.dailyBudget ?? null, countries: c.countries ?? [], accountLabel: c.accountLabel })}
+                              onClick={() => setManageTarget({ accountId: c.accountId, id: c.id, name: c.name, status: c.status, displayStatus: c.displayStatus, servingStateReasons: c.servingStateReasons, dailyBudget: c.dailyBudget ?? null, countries: c.countries ?? [], accountLabel: c.accountLabel })}
                             >
                               <Settings2 className="size-3.5" /> Manage
                             </Button>

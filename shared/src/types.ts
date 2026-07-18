@@ -464,6 +464,10 @@ export interface AdsCampaignLive {
   accountLabel: string;
   status: 'ENABLED' | 'PAUSED' | (string & {});
   servingStatus?: string;
+  /** Apple's real serving state: RUNNING | ON_HOLD | PAUSED | DELETED. */
+  displayStatus?: string;
+  /** Why it isn't serving (e.g. CREDIT_CARD_DECLINED) — see adsStatus.ts. */
+  servingStateReasons?: string[];
   dailyBudget?: { amount: number; currency: string } | null;
   countries?: string[];
 }
@@ -516,6 +520,9 @@ export interface AdsAdGroupLive {
   name: string;
   status: string; // ENABLED | PAUSED
   servingStatus?: string;
+  /** Apple's real serving state: RUNNING | ON_HOLD | PAUSED | CAMPAIGN_ON_HOLD. */
+  displayStatus?: string;
+  servingStateReasons?: string[];
   defaultBid: Money | null;
   spendAmount: number;
   spendCurrency: string;
