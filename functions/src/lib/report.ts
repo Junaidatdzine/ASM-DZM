@@ -11,21 +11,31 @@ export function pktNow(): { date: string; hour: number } {
   return { date: shifted.toISOString().slice(0, 10), hour: shifted.getUTCHours() };
 }
 
+/** Rolling windows the report summarises. Data for both is already cached per day. */
+const WEEK_DAYS = 7;
+const MONTH_DAYS = 30;
+
 const money = (n: number) =>
   `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const count = (n: number) => n.toLocaleString('en-US');
 
-interface StoreRow {
-  name: string;
+interface Totals {
   proceedsUsd: number;
   downloads: number;
   units: number;
 }
+interface StoreRow {
+  name: string;
+  week: Totals;
+  month: Totals;
+}
 interface AppRow {
   name: string;
   store: string;
-  proceedsUsd: number;
-  downloads: number;
+  weekProceedsUsd: number;
+  monthProceedsUsd: number;
+  weekDownloads: number;
+  monthDownloads: number;
 }
 
 export interface DailyReport {
@@ -35,94 +45,106 @@ export interface DailyReport {
 }
 
 /**
- * Aggregate the latest report day + trailing 7 days across every store that has
+ * Aggregate the trailing 7- and 30-day windows across every store that has
  * finance data, and render a self-contained HTML email (inline styles only).
  */
 export async function buildDailyReport(): Promise<DailyReport> {
   const storesSnap = await db().collection('stores').get();
   const stores = storesSnap.docs.map((doc) => ({ id: doc.id, data: doc.data() as StoreDoc }));
 
-  const latest: StoreRow[] = [];
-  const week: StoreRow[] = [];
+  const storeRows: StoreRow[] = [];
   const appTotals = new Map<string, AppRow>();
-  let unmatchedUsd = 0;
+  let unmatchedMonthUsd = 0;
   let latestDate = '';
+
+  const aggregate = (days: FinanceDayDoc[]): Totals => ({
+    proceedsUsd: days.reduce((sum, d) => sum + (d.proceedsUsd ?? 0), 0),
+    downloads: days.reduce((sum, d) => sum + d.downloads, 0),
+    units: days.reduce((sum, d) => sum + d.units, 0),
+  });
 
   for (const store of stores) {
     const daysSnap = await refs
       .store(store.id)
       .collection('financeDays')
       .orderBy('date', 'desc')
-      .limit(8)
+      .limit(MONTH_DAYS)
       .get();
     if (daysSnap.empty) continue;
+    // Ordered newest-first, so the first WEEK_DAYS docs are the 7-day window.
     const days = daysSnap.docs.map((d) => d.data() as FinanceDayDoc);
-    const newest = days[0]!;
-    if (newest.date > latestDate) latestDate = newest.date;
+    const weekDays = days.slice(0, WEEK_DAYS);
+    if (days[0]!.date > latestDate) latestDate = days[0]!.date;
 
-    latest.push({
+    storeRows.push({
       name: store.data.name,
-      proceedsUsd: newest.proceedsUsd ?? 0,
-      downloads: newest.downloads,
-      units: newest.units,
-    });
-    week.push({
-      name: store.data.name,
-      proceedsUsd: days.reduce((sum, d) => sum + (d.proceedsUsd ?? 0), 0),
-      downloads: days.reduce((sum, d) => sum + d.downloads, 0),
-      units: days.reduce((sum, d) => sum + d.units, 0),
+      week: aggregate(weekDays),
+      month: aggregate(days),
     });
 
     // App names live in the apps collection; perApp docs carry a cached fallback name.
     const appsSnap = await refs.store(store.id).collection('apps').select('name').get();
     const appNames = new Map(appsSnap.docs.map((a) => [a.id, (a.data() as { name?: string }).name ?? a.id]));
-    for (const day of days) {
+    days.forEach((day, idx) => {
+      const inWeek = idx < WEEK_DAYS;
       for (const [appId, stat] of Object.entries(day.perApp ?? {})) {
+        const proceeds = stat.proceedsUsd ?? 0;
         // Rows that don't resolve to a real app (e.g. subscription products like
         // "yearly") are refined away from Top apps — their proceeds already count
-        // in the store and day totals, and the next sync re-attributes them.
+        // in the store and window totals, and the next sync re-attributes them.
         if (!appNames.has(appId)) {
-          unmatchedUsd += stat.proceedsUsd ?? 0;
+          unmatchedMonthUsd += proceeds;
           continue;
         }
         const key = `${store.id}:${appId}`;
         const row = appTotals.get(key) ?? {
           name: appNames.get(appId) ?? stat.name ?? appId,
           store: store.data.name,
-          proceedsUsd: 0,
-          downloads: 0,
+          weekProceedsUsd: 0,
+          monthProceedsUsd: 0,
+          weekDownloads: 0,
+          monthDownloads: 0,
         };
-        row.proceedsUsd += stat.proceedsUsd ?? 0;
-        row.downloads += stat.downloads;
+        row.monthProceedsUsd += proceeds;
+        row.monthDownloads += stat.downloads;
+        if (inWeek) {
+          row.weekProceedsUsd += proceeds;
+          row.weekDownloads += stat.downloads;
+        }
         appTotals.set(key, row);
       }
-    }
+    });
   }
 
-  const sum = (rows: StoreRow[], k: 'proceedsUsd' | 'downloads' | 'units') =>
-    rows.reduce((total, row) => total + row[k], 0);
+  const sumWindow = (pick: (r: StoreRow) => Totals): Totals => ({
+    proceedsUsd: storeRows.reduce((t, r) => t + pick(r).proceedsUsd, 0),
+    downloads: storeRows.reduce((t, r) => t + pick(r).downloads, 0),
+    units: storeRows.reduce((t, r) => t + pick(r).units, 0),
+  });
+  const totalWeek = sumWindow((r) => r.week);
+  const totalMonth = sumWindow((r) => r.month);
+
   const topApps = [...appTotals.values()]
-    .sort((a, b) => b.proceedsUsd - a.proceedsUsd || b.downloads - a.downloads)
+    .sort((a, b) => b.monthProceedsUsd - a.monthProceedsUsd || b.weekProceedsUsd - a.weekProceedsUsd)
     .slice(0, 10);
 
-  const totalDay = { proceeds: sum(latest, 'proceedsUsd'), downloads: sum(latest, 'downloads'), units: sum(latest, 'units') };
-  const totalWeek = { proceeds: sum(week, 'proceedsUsd'), downloads: sum(week, 'downloads'), units: sum(week, 'units') };
-
   // Advertising: Apple Ads spend + AdMob revenue (present only when connected).
-  const adsSnap = await refs.adsDays().orderBy('date', 'desc').limit(8).get();
+  const adsSnap = await refs.adsDays().orderBy('date', 'desc').limit(MONTH_DAYS).get();
   const adsDays = adsSnap.docs.map((d) => d.data() as AdsDayDoc);
-  const adsLatest = adsDays[0] ?? null;
+  const adsWeek = adsDays.slice(0, WEEK_DAYS);
+  const spendUsd = (list: AdsDayDoc[]) => list.reduce((s, d) => s + (d.appleAds?.spendUsd ?? 0), 0);
+  const admobUsd = (list: AdsDayDoc[]) => list.reduce((s, d) => s + (d.admob?.earningsUsd ?? 0), 0);
   const ads = {
     haveSpend: adsDays.some((d) => d.appleAds),
     haveAdmob: adsDays.some((d) => d.admob),
-    daySpend: adsLatest?.appleAds?.spendUsd ?? 0,
-    dayAdmob: adsLatest?.admob?.earningsUsd ?? 0,
-    weekSpend: adsDays.reduce((s, d) => s + (d.appleAds?.spendUsd ?? 0), 0),
-    weekAdmob: adsDays.reduce((s, d) => s + (d.admob?.earningsUsd ?? 0), 0),
-    dayInstalls: adsLatest?.appleAds?.installs ?? 0,
+    weekSpend: spendUsd(adsWeek),
+    monthSpend: spendUsd(adsDays),
+    weekAdmob: admobUsd(adsWeek),
+    monthAdmob: admobUsd(adsDays),
+    weekInstalls: adsWeek.reduce((s, d) => s + (d.appleAds?.installs ?? 0), 0),
   };
-  const netDay = totalDay.proceeds + ads.dayAdmob - ads.daySpend;
-  const netWeek = totalWeek.proceeds + ads.weekAdmob - ads.weekSpend;
+  const netWeek = totalWeek.proceedsUsd + ads.weekAdmob - ads.weekSpend;
+  const netMonth = totalMonth.proceedsUsd + ads.monthAdmob - ads.monthSpend;
 
   const brandBar =
     '<div style="height:6px;background:linear-gradient(90deg,#8DC63F,#F7941D,#EE1C25,#EC008C,#662D91,#1C75BC,#00A79D);border-radius:3px 3px 0 0"></div>';
@@ -137,12 +159,18 @@ export async function buildDailyReport(): Promise<DailyReport> {
   const td = (t: string, right = false, bold = false) =>
     `<td style="text-align:${right ? 'right' : 'left'};padding:7px 10px;font-size:13px;color:#111827;${bold ? 'font-weight:600;' : ''}border-bottom:1px solid #f3f4f6">${t}</td>`;
 
-  const storeRows = week
-    .sort((a, b) => b.proceedsUsd - a.proceedsUsd)
-    .map((row) => `<tr>${td(row.name)}${td(money(row.proceedsUsd), true, true)}${td(count(row.downloads), true)}${td(count(row.units), true)}</tr>`)
+  const storeRowsHtml = storeRows
+    .sort((a, b) => b.month.proceedsUsd - a.month.proceedsUsd)
+    .map(
+      (row) =>
+        `<tr>${td(row.name)}${td(money(row.week.proceedsUsd), true, true)}${td(money(row.month.proceedsUsd), true)}${td(count(row.month.downloads), true)}</tr>`,
+    )
     .join('');
-  const appRows = topApps
-    .map((row, i) => `<tr>${td(`${i + 1}. ${row.name}`)}${td(row.store)}${td(money(row.proceedsUsd), true, true)}${td(count(row.downloads), true)}</tr>`)
+  const appRowsHtml = topApps
+    .map(
+      (row, i) =>
+        `<tr>${td(`${i + 1}. ${row.name}`)}${td(row.store)}${td(money(row.weekProceedsUsd), true, true)}${td(money(row.monthProceedsUsd), true)}</tr>`,
+    )
     .join('');
 
   const html = `
@@ -155,35 +183,35 @@ export async function buildDailyReport(): Promise<DailyReport> {
       </td>
       <td style="vertical-align:middle">
         <div style="font-size:17px;font-weight:800;color:#111827;letter-spacing:-.01em">Dzinemedia <span style="color:#1C75BC">ASM</span></div>
-        <div style="font-size:11px;color:#6b7280">Daily report · ${latestDate || '—'} · proceeds after Apple's cut, USD</div>
+        <div style="font-size:11px;color:#6b7280">Last 7 &amp; 30 days · through ${latestDate || '—'} · proceeds after Apple's cut, USD</div>
       </td>
     </tr></table>
 
     <table role="presentation" width="100%" cellspacing="8" style="margin-top:16px"><tr>
-      ${tile('Proceeds (day)', money(totalDay.proceeds), `${money(totalWeek.proceeds)} last 7 days`)}
-      ${tile('Downloads (day)', count(totalDay.downloads), `${count(totalWeek.downloads)} last 7 days`)}
-      ${tile('Units (day)', count(totalDay.units), `${count(totalWeek.units)} last 7 days`)}
+      ${tile('Proceeds (7 days)', money(totalWeek.proceedsUsd), `${money(totalMonth.proceedsUsd)} last 30 days`)}
+      ${tile('Downloads (7 days)', count(totalWeek.downloads), `${count(totalMonth.downloads)} last 30 days`)}
+      ${tile('Units (7 days)', count(totalWeek.units), `${count(totalMonth.units)} last 30 days`)}
     </tr></table>
     ${ads.haveSpend || ads.haveAdmob
       ? `<table role="presentation" width="100%" cellspacing="8" style="margin-top:2px"><tr>
-      ${ads.haveSpend ? tile('Ad spend · Apple Ads', money(ads.daySpend), `${money(ads.weekSpend)} last 7 days · ${count(ads.dayInstalls)} installs/day`) : ''}
-      ${ads.haveAdmob ? tile('Ad revenue · AdMob', money(ads.dayAdmob), `${money(ads.weekAdmob)} last 7 days`) : ''}
-      ${tile('Net (day)', money(netDay), `${money(netWeek)} last 7 days · proceeds + AdMob − ad spend`)}
+      ${ads.haveSpend ? tile('Ad spend · Apple Ads', money(ads.weekSpend), `${money(ads.monthSpend)} last 30 days · ${count(ads.weekInstalls)} installs/7d`) : ''}
+      ${ads.haveAdmob ? tile('Ad revenue · AdMob', money(ads.weekAdmob), `${money(ads.monthAdmob)} last 30 days`) : ''}
+      ${tile('Net (7 days)', money(netWeek), `${money(netMonth)} last 30 days · proceeds + AdMob − ad spend`)}
     </tr></table>`
       : ''}
 
-    <div style="font-size:13px;font-weight:600;color:#111827;margin:20px 0 6px">Stores — last 7 days</div>
+    <div style="font-size:13px;font-weight:600;color:#111827;margin:20px 0 6px">Stores — 7 &amp; 30 days</div>
     <table role="presentation" width="100%" cellspacing="0">
-      <tr>${th('Store')}${th('Proceeds', true)}${th('Downloads', true)}${th('Units', true)}</tr>
-      ${storeRows || `<tr>${td('No finance data yet', false)}</tr>`}
+      <tr>${th('Store')}${th('7d proceeds', true)}${th('30d proceeds', true)}${th('30d downloads', true)}</tr>
+      ${storeRowsHtml || `<tr>${td('No finance data yet', false)}</tr>`}
     </table>
 
-    <div style="font-size:13px;font-weight:600;color:#111827;margin:20px 0 6px">Top apps — last 7 days</div>
+    <div style="font-size:13px;font-weight:600;color:#111827;margin:20px 0 6px">Top apps — 7 &amp; 30 days</div>
     <table role="presentation" width="100%" cellspacing="0">
-      <tr>${th('App')}${th('Store')}${th('Proceeds', true)}${th('Downloads', true)}</tr>
-      ${appRows || `<tr>${td('No per-app data yet', false)}</tr>`}
+      <tr>${th('App')}${th('Store')}${th('7d proceeds', true)}${th('30d proceeds', true)}</tr>
+      ${appRowsHtml || `<tr>${td('No per-app data yet', false)}</tr>`}
     </table>
-    ${unmatchedUsd > 0.005 ? `<div style="font-size:11px;color:#9ca3af;margin-top:6px">Includes ${money(unmatchedUsd)} of purchases still being matched to their apps — totals above are complete.</div>` : ''}
+    ${unmatchedMonthUsd > 0.005 ? `<div style="font-size:11px;color:#9ca3af;margin-top:6px">Includes ${money(unmatchedMonthUsd)} of purchases still being matched to their apps (last 30 days) — totals above are complete.</div>` : ''}
 
     <div style="border-top:1px solid #f3f4f6;margin-top:22px;padding-top:14px;font-size:11px;color:#9ca3af">
       Sent automatically by <strong style="color:#6b7280">Dzinemedia ASM</strong> ·
@@ -194,9 +222,9 @@ export async function buildDailyReport(): Promise<DailyReport> {
 </div>`;
 
   return {
-    subject: `Dzinemedia ASM · Daily report ${latestDate || pktNow().date} — ${money(totalDay.proceeds)} · ${count(totalDay.downloads)} downloads`,
+    subject: `Dzinemedia ASM · Report ${latestDate || pktNow().date} — ${money(totalWeek.proceedsUsd)} last 7d · ${money(totalMonth.proceedsUsd)} last 30d`,
     html,
-    summary: `${money(totalDay.proceeds)} proceeds, ${count(totalDay.downloads)} downloads (day) · ${latest.length} stores`,
+    summary: `${money(totalWeek.proceedsUsd)} proceeds 7d · ${money(totalMonth.proceedsUsd)} 30d · ${count(totalWeek.downloads)} downloads 7d · ${storeRows.length} stores`,
   };
 }
 
