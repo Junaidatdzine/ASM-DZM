@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { isDownloadProductType, type AppDoc, type FinanceAppStat, type FinanceDayDoc, type StoreDoc } from '@asm/shared';
+import { isDownloadProductType, type AppDoc, type FinanceAppStat, type FinanceDayDoc, type StoreDoc, type SubsDayDoc } from '@asm/shared';
 import { defineCallable } from '../lib/wrap';
 import { Timestamp, db, refs } from '../lib/firestore';
 import { requireAction } from '../lib/authz';
@@ -7,10 +7,12 @@ import { AppError, notFound } from '../lib/errors';
 import { getAscApi, markStoreAuthError } from '../lib/asc/factory';
 import { startOperation } from '../lib/operations';
 import { toUsd, usdRates } from '../lib/rates';
-import type { SalesRow } from '../lib/asc/types';
+import type { SalesRow, SubscriptionEventRow } from '../lib/asc/types';
 
 const financeDayRef = (sid: string, date: string) =>
   refs.store(sid).collection('financeDays').doc(date);
+const subsDayRef = (sid: string, date: string) =>
+  refs.store(sid).collection('subscriptionDays').doc(date);
 
 function utcDateString(daysAgo: number): string {
   const d = new Date(Date.now() - daysAgo * 24 * 3600 * 1000);
@@ -22,6 +24,34 @@ const round2 = (n: number) => Math.round(n * 100) / 100;
 // now attribute via a learned subscription→app map + single-app fallback.
 // Bump forces a rewrite of stale day docs on the next sync.
 const FINANCE_SCHEMA_VERSION = 5;
+const SUBS_SCHEMA_VERSION = 1;
+
+/** A "Subscribe" event with any free-trial offer is a trial start, not a paid one. */
+const isFreeTrialOffer = (offerType: string) => /free\s*trial/i.test(offerType);
+
+/**
+ * Fold a day's subscription events into trial-start / new-paid / cancellation counts.
+ * Trials and paid subs are both "Subscribe" events, split by offer type, so they
+ * never double-count.
+ */
+export function aggregateSubsDay(
+  date: string,
+  rows: SubscriptionEventRow[],
+): Omit<SubsDayDoc, 'fetchedAt'> {
+  let trialStarts = 0;
+  let newPaid = 0;
+  let cancellations = 0;
+  for (const row of rows) {
+    const event = row.event.toLowerCase();
+    if (event === 'subscribe') {
+      if (isFreeTrialOffer(row.offerType)) trialStarts += row.quantity;
+      else newPaid += row.quantity;
+    } else if (event === 'cancel') {
+      cancellations += row.quantity;
+    }
+  }
+  return { schemaVersion: SUBS_SCHEMA_VERSION, date, trialStarts, newPaid, cancellations };
+}
 
 function normalized(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
@@ -216,6 +246,20 @@ export async function runFinanceSync(
         fetchedAt: Timestamp.now(),
       });
       fetched += 1;
+    }
+    // Best-effort subscription events (trials/activations). A store with no
+    // subscriptions returns null and simply gets no docs — never fails the sync.
+    for (const date of targets) {
+      try {
+        const subRows = await api.fetchDailySubscriptionEvents(vendor, date);
+        if (subRows === null) continue;
+        await subsDayRef(storeId, date).set({
+          ...aggregateSubsDay(date, subRows),
+          fetchedAt: Timestamp.now(),
+        });
+      } catch (err) {
+        console.warn('subscription-event sync failed', storeId, date, err instanceof Error ? err.message : err);
+      }
     }
     await refs.store(storeId).update({ financeSyncedAt: Timestamp.now() });
     await op.finish('success', `Finance up to date — ${store.name}`);

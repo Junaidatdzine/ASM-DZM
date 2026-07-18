@@ -36,6 +36,7 @@ import type {
   InfoLocAttrs,
   ReviewDetailAttrs,
   SalesRow,
+  SubscriptionEventRow,
   VersionInfoAttrs,
   VersionLocAttrs,
 } from './types';
@@ -175,6 +176,38 @@ export function parseSalesTsv(tsv: string): SalesRow[] {
       proceedsPerUnit: Number(cols[iProceeds] ?? 0) || 0,
       currency: (cols[iCurrency] ?? 'USD').trim() || 'USD',
       ...(parent ? { parentIdentifier: parent } : {}),
+    });
+  }
+  return rows;
+}
+
+/**
+ * Parse a daily Subscription Event report TSV (header-name based, order-independent).
+ * The report's columns vary by version; we only read the four we need and tolerate
+ * the rest being absent, so a future Apple version bump won't break the parse.
+ */
+export function parseSubscriptionEventTsv(tsv: string): SubscriptionEventRow[] {
+  const lines = tsv.split(/\r?\n/).filter((l) => l.trim() !== '');
+  if (lines.length < 2) return [];
+  const header = lines[0]!.split('\t').map((h) => h.trim().toLowerCase());
+  const idx = (name: string) => header.indexOf(name);
+  const iEvent = idx('event');
+  const iApp = idx('app apple id');
+  const iOffer = idx('subscription offer type');
+  const iQty = idx('quantity');
+  if (iEvent < 0 || iQty < 0) return [];
+
+  const rows: SubscriptionEventRow[] = [];
+  for (const line of lines.slice(1)) {
+    const cols = line.split('\t');
+    if (cols.length < header.length - 2) continue; // total/malformed rows
+    const quantity = Number(cols[iQty] ?? 0);
+    if (!Number.isFinite(quantity) || quantity === 0) continue;
+    rows.push({
+      event: (cols[iEvent] ?? '').trim(),
+      appAppleId: iApp >= 0 ? (cols[iApp] ?? '').trim() : '',
+      offerType: iOffer >= 0 ? (cols[iOffer] ?? '').trim() : '',
+      quantity,
     });
   }
   return rows;
@@ -333,6 +366,45 @@ export class AscClient implements AscApi {
         tsv = buf.toString('utf8'); // some proxies deliver it pre-inflated
       }
       return parseSalesTsv(tsv);
+    });
+  }
+
+  async fetchDailySubscriptionEvents(
+    vendorNumber: string,
+    date: string,
+  ): Promise<SubscriptionEventRow[] | null> {
+    return this.limit(async () => {
+      const params = new URLSearchParams({
+        'filter[frequency]': 'DAILY',
+        'filter[reportDate]': date,
+        'filter[reportSubType]': 'SUMMARY',
+        'filter[reportType]': 'SUBSCRIPTION_EVENT',
+        'filter[vendorNumber]': vendorNumber,
+        'filter[version]': '1_3', // required for the subscription-event report
+      });
+      const res = await fetch(`${BASE}/v1/salesReports?${params}`, {
+        headers: {
+          Authorization: `Bearer ${await this.token()}`,
+          Accept: 'application/a-gzip',
+        },
+      }).catch(() => null);
+      if (!res) throw new AppError('unavailable', 'Could not reach App Store Connect.');
+      // 404 = no subscription report (no subscriptions, or not generated yet) → no data.
+      if (res.status === 404 || res.status === 410) return null;
+      if (res.status === 401 || res.status === 403) {
+        // Finance role missing, or the account simply has no subscriptions — treat
+        // as "no activation data" rather than failing the whole finance sync.
+        return null;
+      }
+      if (!res.ok) return null;
+      const buf = Buffer.from(await res.arrayBuffer());
+      let tsv: string;
+      try {
+        tsv = gunzipSync(buf).toString('utf8');
+      } catch {
+        tsv = buf.toString('utf8');
+      }
+      return parseSubscriptionEventTsv(tsv);
     });
   }
 

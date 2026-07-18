@@ -21,6 +21,7 @@ import type {
   AscVersionLoc,
   InfoLocAttrs,
   SalesRow,
+  SubscriptionEventRow,
   VersionInfoAttrs,
   VersionLocAttrs,
 } from './types';
@@ -48,6 +49,26 @@ function mockSales(date: string): SalesRow[] {
     { appleId: 'mock-app-fittrack', sku: 'FIT1', title: 'FitTrack Pro', productType: '1', units: Math.round(rand(25, 90, 5) * weekend), proceedsPerUnit: 0, currency: 'USD' },
     { appleId: '9900000002', sku: 'FIT1.SUB', title: 'FitTrack Monthly', productType: 'IA9', units: rand(4, 18, 6), proceedsPerUnit: 3.49, currency: 'USD', parentIdentifier: 'FIT1' },
     { appleId: '9900000002', sku: 'FIT1.SUB', title: 'FitTrack Monthly', productType: 'IA9', units: rand(1, 7, 7), proceedsPerUnit: 2.94, currency: 'GBP', parentIdentifier: 'FIT1' },
+  ];
+}
+
+/** Deterministic per-date subscription events for the two mock apps that have subs. */
+function mockSubscriptionEvents(date: string): SubscriptionEventRow[] {
+  let h = 0;
+  for (let i = 0; i < date.length; i++) h = (h * 31 + date.charCodeAt(i)) | 0;
+  const rand = (min: number, max: number, salt: number) => {
+    const x = Math.abs(Math.sin(h + salt) * 10000) % 1;
+    return Math.floor(min + x * (max - min));
+  };
+  return [
+    // Bloom (yearly sub) — trials, paid activations, a few cancellations.
+    { event: 'Subscribe', appAppleId: 'mock-app-bloom', offerType: 'Free Trial', quantity: rand(8, 30, 11) },
+    { event: 'Subscribe', appAppleId: 'mock-app-bloom', offerType: '', quantity: rand(3, 12, 12) },
+    { event: 'Cancel', appAppleId: 'mock-app-bloom', offerType: '', quantity: rand(1, 6, 13) },
+    // FitTrack (monthly sub).
+    { event: 'Subscribe', appAppleId: 'mock-app-fittrack', offerType: 'Free Trial', quantity: rand(5, 18, 14) },
+    { event: 'Subscribe', appAppleId: 'mock-app-fittrack', offerType: 'Pay As You Go', quantity: rand(2, 9, 15) },
+    { event: 'Cancel', appAppleId: 'mock-app-fittrack', offerType: '', quantity: rand(0, 4, 16) },
   ];
 }
 
@@ -435,6 +456,11 @@ export function getMockAsc(storeId: string): AscApi {
       const d = new Date(date + 'T00:00:00Z').getTime();
       if (Number.isNaN(d) || d > Date.now() - 12 * 3600 * 1000) return null;
       return mockSales(date);
+    },
+    async fetchDailySubscriptionEvents(_vendorNumber, date) {
+      const d = new Date(date + 'T00:00:00Z').getTime();
+      if (Number.isNaN(d) || d > Date.now() - 12 * 3600 * 1000) return null;
+      return mockSubscriptionEvents(date);
     },
     async verify() {
       return { appsCount: st.apps.length };

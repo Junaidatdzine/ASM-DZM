@@ -401,6 +401,23 @@ export interface FinanceDayDoc {
   fetchedAt: TS;
 }
 
+/**
+ * One day of subscription lifecycle events, cached per store (admin-only readable),
+ * from Apple's Subscription Event report. Counts of people, never money.
+ * subscriptionDays/{YYYY-MM-DD}.
+ */
+export interface SubsDayDoc {
+  schemaVersion?: number;
+  date: string; // YYYY-MM-DD
+  /** Free-trial subscriptions started. */
+  trialStarts: number;
+  /** New paid subscriptions started (no free trial). */
+  newPaid: number;
+  /** Auto-renew turned off (a future churn signal, not an immediate loss). */
+  cancellations: number;
+  fetchedAt: TS;
+}
+
 // ---- Advertising: Apple Search Ads spend + AdMob revenue ----
 
 export type AdsProvider = 'appleAds' | 'admob';

@@ -277,12 +277,30 @@ export interface SalesRow {
 }
 
 /**
+ * One parsed row of a daily Subscription Event report (reportType=SUBSCRIPTION_EVENT).
+ * This is where real trial starts and subscription activations live — the sales
+ * summary report only carries paid units and proceeds, never these lifecycle events.
+ */
+export interface SubscriptionEventRow {
+  /** e.g. "Subscribe", "Renew", "Cancel", "Reactivate". */
+  event: string;
+  /** The parent app's Apple ID (report column "App Apple ID") — matches our app doc id. */
+  appAppleId: string;
+  /** e.g. "Free Trial", "Pay As You Go", "Pay Up Front", or "" for none. */
+  offerType: string;
+  /** Number of subscribers this row represents (report column "Quantity"). */
+  quantity: number;
+}
+
+/**
  * The surface both the real client and the fixture mock implement.
  * Everything the app does against Apple goes through this interface.
  */
 export interface AscApi {
   /** Daily sales summary (gzip TSV on the real API). null = report not available (yet). */
   fetchDailySales(vendorNumber: string, date: string): Promise<SalesRow[] | null>;
+  /** Daily subscription events (trials, activations, cancellations). null = no subscriptions / not available. */
+  fetchDailySubscriptionEvents(vendorNumber: string, date: string): Promise<SubscriptionEventRow[] | null>;
   /** Cheap credentials probe; returns total app count. */
   verify(): Promise<{ appsCount: number }>;
 
