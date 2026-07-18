@@ -353,12 +353,43 @@ export function AdsPage() {
               <p className="py-8 text-center text-[13px] text-muted-foreground">No ads data yet — connect an account and hit Sync.</p>
             ) : (
               <div className="flex h-40 items-end gap-[2px]">
-                {filtered.bars.map((bar) => (
-                  <div key={bar.date} className="flex h-full min-w-0 flex-1 items-end gap-[1px]" title={`${bar.date} · spend ${fmt(bar.spend)} · AdMob ${fmt(bar.admob)}`}>
-                    <div className="min-h-[2px] flex-1 rounded-t-sm bg-destructive/70" style={{ height: `${(bar.spend / maxBar) * 100}%` }} />
-                    <div className="min-h-[2px] flex-1 rounded-t-sm bg-success/80" style={{ height: `${(bar.admob / maxBar) * 100}%` }} />
-                  </div>
-                ))}
+                {filtered.bars.map((bar, i) => {
+                  // Clamp the tooltip at the chart edges so it never clips.
+                  const pos = filtered.bars.length < 2 ? 0.5 : i / (filtered.bars.length - 1);
+                  const align = pos < 0.18 ? 'left-0' : pos > 0.82 ? 'right-0' : 'left-1/2 -translate-x-1/2';
+                  return (
+                    <div
+                      key={bar.date}
+                      tabIndex={0}
+                      className="group relative flex h-full min-w-0 flex-1 items-end gap-[1px] rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+                    >
+                      {/* Whole column is the hit target; hovered bars lift to full opacity. */}
+                      <div className="min-h-[2px] flex-1 rounded-t-sm bg-destructive/70 transition-colors group-hover:bg-destructive group-focus-within:bg-destructive" style={{ height: `${(bar.spend / maxBar) * 100}%` }} />
+                      <div className="min-h-[2px] flex-1 rounded-t-sm bg-success/80 transition-colors group-hover:bg-success group-focus-within:bg-success" style={{ height: `${(bar.admob / maxBar) * 100}%` }} />
+                      <div
+                        role="tooltip"
+                        className={cn(
+                          'pointer-events-none absolute top-0 z-10 hidden w-max min-w-[132px] rounded-lg border bg-popover px-2.5 py-2 shadow-pop group-hover:block group-focus-within:block',
+                          align,
+                        )}
+                      >
+                        <div className="mb-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                          {new Date(`${bar.date}T00:00:00Z`).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' })}
+                        </div>
+                        <div className="space-y-1 text-[12px]">
+                          <div className="flex items-center justify-between gap-4">
+                            <span className="flex items-center gap-1.5 text-muted-foreground"><span className="inline-block h-[2px] w-2.5 rounded-full bg-destructive" /> Ad spend</span>
+                            <span className="font-semibold tabular-nums">{fmt(bar.spend)}</span>
+                          </div>
+                          <div className="flex items-center justify-between gap-4">
+                            <span className="flex items-center gap-1.5 text-muted-foreground"><span className="inline-block h-[2px] w-2.5 rounded-full bg-success" /> AdMob</span>
+                            <span className="font-semibold tabular-nums">{fmt(bar.admob)}</span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             )}
           </div>
