@@ -398,6 +398,8 @@ export interface FinanceDayDoc {
   proceeds: Record<string, number>;
   proceedsUsd?: number;
   perApp: Record<string, FinanceAppStat>; // ASC app id -> stats
+  /** Developer proceeds by App Store country/region (ISO code), in USD. */
+  perCountry?: Record<string, number>;
   fetchedAt: TS;
 }
 

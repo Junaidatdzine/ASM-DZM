@@ -154,6 +154,7 @@ export function parseSalesTsv(tsv: string): SalesRow[] {
   const iProceeds = idx('developer proceeds');
   const iCurrency = idx('currency of proceeds');
   const iAppleId = idx('apple identifier');
+  const iCountry = idx('country code');
   // IAP/subscription rows carry the parent APP's SKU here — the only reliable
   // way to attribute their proceeds to the owning app.
   const iParent = idx('parent identifier');
@@ -175,6 +176,7 @@ export function parseSalesTsv(tsv: string): SalesRow[] {
       units,
       proceedsPerUnit: Number(cols[iProceeds] ?? 0) || 0,
       currency: (cols[iCurrency] ?? 'USD').trim() || 'USD',
+      country: iCountry >= 0 ? (cols[iCountry] ?? '').trim().toUpperCase() : '',
       ...(parent ? { parentIdentifier: parent } : {}),
     });
   }

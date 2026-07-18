@@ -42,13 +42,13 @@ function mockSales(date: string): SalesRow[] {
   // IAP/subscription rows carry their own (non-app) Apple ID and reference the
   // parent app only via Parent Identifier (= parent SKU) — exactly like Apple's reports.
   return [
-    { appleId: 'mock-app-bloom', sku: 'BLOOM1', title: 'Bloom — Plant Care', productType: '1', units: Math.round(rand(60, 160, 1) * weekend), proceedsPerUnit: 0, currency: 'USD' },
-    { appleId: '9900000001', sku: 'BLOOM1.PRO', title: 'Bloom Pro (Yearly)', productType: 'IAY', units: Math.round(rand(6, 22, 2) * weekend), proceedsPerUnit: 13.99, currency: 'USD', parentIdentifier: 'BLOOM1' },
-    { appleId: '9900000001', sku: 'BLOOM1.PRO', title: 'Bloom Pro (Yearly)', productType: 'IAY', units: rand(2, 9, 3), proceedsPerUnit: 12.6, currency: 'EUR', parentIdentifier: 'BLOOM1' },
-    { appleId: 'mock-app-bloom', sku: 'BLOOM1', title: 'Bloom — Plant Care', productType: '7', units: rand(120, 400, 4), proceedsPerUnit: 0, currency: 'USD' },
-    { appleId: 'mock-app-fittrack', sku: 'FIT1', title: 'FitTrack Pro', productType: '1', units: Math.round(rand(25, 90, 5) * weekend), proceedsPerUnit: 0, currency: 'USD' },
-    { appleId: '9900000002', sku: 'FIT1.SUB', title: 'FitTrack Monthly', productType: 'IA9', units: rand(4, 18, 6), proceedsPerUnit: 3.49, currency: 'USD', parentIdentifier: 'FIT1' },
-    { appleId: '9900000002', sku: 'FIT1.SUB', title: 'FitTrack Monthly', productType: 'IA9', units: rand(1, 7, 7), proceedsPerUnit: 2.94, currency: 'GBP', parentIdentifier: 'FIT1' },
+    { appleId: 'mock-app-bloom', sku: 'BLOOM1', title: 'Bloom — Plant Care', productType: '1', units: Math.round(rand(60, 160, 1) * weekend), proceedsPerUnit: 0, currency: 'USD', country: 'US' },
+    { appleId: '9900000001', sku: 'BLOOM1.PRO', title: 'Bloom Pro (Yearly)', productType: 'IAY', units: Math.round(rand(6, 22, 2) * weekend), proceedsPerUnit: 13.99, currency: 'USD', country: 'US', parentIdentifier: 'BLOOM1' },
+    { appleId: '9900000001', sku: 'BLOOM1.PRO', title: 'Bloom Pro (Yearly)', productType: 'IAY', units: rand(2, 9, 3), proceedsPerUnit: 12.6, currency: 'EUR', country: 'DE', parentIdentifier: 'BLOOM1' },
+    { appleId: 'mock-app-bloom', sku: 'BLOOM1', title: 'Bloom — Plant Care', productType: '7', units: rand(120, 400, 4), proceedsPerUnit: 0, currency: 'USD', country: 'GB' },
+    { appleId: 'mock-app-fittrack', sku: 'FIT1', title: 'FitTrack Pro', productType: '1', units: Math.round(rand(25, 90, 5) * weekend), proceedsPerUnit: 0, currency: 'USD', country: 'US' },
+    { appleId: '9900000002', sku: 'FIT1.SUB', title: 'FitTrack Monthly', productType: 'IA9', units: rand(4, 18, 6), proceedsPerUnit: 3.49, currency: 'USD', country: 'US', parentIdentifier: 'FIT1' },
+    { appleId: '9900000002', sku: 'FIT1.SUB', title: 'FitTrack Monthly', productType: 'IA9', units: rand(1, 7, 7), proceedsPerUnit: 2.94, currency: 'GBP', country: 'GB', parentIdentifier: 'FIT1' },
   ];
 }
 

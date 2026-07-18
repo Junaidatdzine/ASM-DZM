@@ -272,6 +272,8 @@ export interface SalesRow {
   units: number;
   proceedsPerUnit: number;
   currency: string;
+  /** App Store country/region ISO code the sale happened in (report column "Country Code"). */
+  country: string;
   /** For IAP/subscription rows: the parent APP's SKU (report column "Parent Identifier"). */
   parentIdentifier?: string;
 }

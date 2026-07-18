@@ -22,8 +22,27 @@ function utcDateString(daysAgo: number): string {
 const round2 = (n: number) => Math.round(n * 100) / 100;
 // v5: subscription rows with a BLANK Parent Identifier (typical for renewals)
 // now attribute via a learned subscription→app map + single-app fallback.
+// v6: per-country proceeds (perCountry) added.
 // Bump forces a rewrite of stale day docs on the next sync.
-const FINANCE_SCHEMA_VERSION = 5;
+const FINANCE_SCHEMA_VERSION = 6;
+
+/** Fold a day's rows into per-country developer proceeds, converted to USD. */
+export function perCountryUsd(rows: SalesRow[], rates: Record<string, number>): Record<string, number> {
+  const byCountry: Record<string, Record<string, number>> = {};
+  for (const row of rows) {
+    const rowProceeds = row.units * row.proceedsPerUnit;
+    if (rowProceeds === 0) continue;
+    const country = row.country || 'ZZ';
+    const bucket = (byCountry[country] ??= {});
+    bucket[row.currency] = round2((bucket[row.currency] ?? 0) + rowProceeds);
+  }
+  const out: Record<string, number> = {};
+  for (const [country, byCurrency] of Object.entries(byCountry)) {
+    const usd = toUsd(byCurrency, rates);
+    if (usd) out[country] = usd;
+  }
+  return out;
+}
 const SUBS_SCHEMA_VERSION = 1;
 
 /** A "Subscribe" event with any free-trial offer is a trial start, not a paid one. */
@@ -243,6 +262,7 @@ export async function runFinanceSync(
       for (const app of Object.values(aggregate.perApp)) app.proceedsUsd = toUsd(app.proceeds, rates);
       await financeDayRef(storeId, date).set({
         ...aggregate,
+        perCountry: perCountryUsd(rows, rates),
         fetchedAt: Timestamp.now(),
       });
       fetched += 1;

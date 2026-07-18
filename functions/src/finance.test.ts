@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { AppDoc } from '../../shared/src/index';
 import { parseSalesTsv } from './lib/asc/client';
-import { aggregateDay, learnSubscriptionMap, planFinanceTargets, resolveApp } from './callable/finance';
+import { aggregateDay, learnSubscriptionMap, perCountryUsd, planFinanceTargets, resolveApp } from './callable/finance';
 
 const apps = [
   { id: '6754688919', data: { name: 'AI Detector, Humanize AI Text', sku: 'aidetector' } as AppDoc },
@@ -42,6 +42,22 @@ describe('resolveApp', () => {
   it('leaves rows with unknown parents unresolved', () => {
     const rows = parseSalesTsv(TSV);
     expect(resolveApp(rows[3]!, apps)).toBeNull();
+  });
+});
+
+describe('country attribution', () => {
+  it('parses the Country Code column (uppercased)', () => {
+    const rows = parseSalesTsv(TSV);
+    expect(rows[0]!.country).toBe('US');
+    expect(rows[2]!.country).toBe('DE');
+  });
+
+  it('perCountryUsd sums proceeds per country and converts to USD', () => {
+    const rows = parseSalesTsv(TSV);
+    // rates are "currency per USD": US = 3×$2.80 + 1×$0.70 = $9.10; DE = €5.04 / 1.1.
+    const perCountry = perCountryUsd(rows, { USD: 1, EUR: 1.1 });
+    expect(perCountry.US).toBeCloseTo(9.1, 2);
+    expect(perCountry.DE).toBeCloseTo(5.04 / 1.1, 2);
   });
 });
 
@@ -110,6 +126,7 @@ describe('v5 subscription attribution (blank Parent Identifier)', () => {
     units: 3,
     proceedsPerUnit: 24.5,
     currency: 'USD',
+    country: 'US',
     // no parentIdentifier — exactly how Apple ships renewal rows
   };
 
