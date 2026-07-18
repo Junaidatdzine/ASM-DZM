@@ -8,8 +8,9 @@ import {
   Megaphone,
   Pause,
   Play,
-  PlugZap,
+  Plus,
   RefreshCw,
+  Settings2,
   Trash2,
   Wallet,
 } from 'lucide-react';
@@ -29,6 +30,7 @@ import { FieldHint, Label } from '@/components/ui/Label';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { Textarea } from '@/components/ui/Textarea';
 import { cn, timeAgo } from '@/lib/utils';
+import { CampaignManagerDialog, CreateCampaignDialog, type CampaignRef } from './CampaignManager';
 
 const RANGES = [
   { key: '7', label: '7 days' },
@@ -73,6 +75,8 @@ export function AdsPage() {
   const [appleOpen, setAppleOpen] = useState(false);
   const [admobOpen, setAdmobOpen] = useState(false);
   const [removeTarget, setRemoveTarget] = useState<{ id: string; label: string } | null>(null);
+  const [manageTarget, setManageTarget] = useState<CampaignRef | null>(null);
+  const [createCampaignOpen, setCreateCampaignOpen] = useState(false);
 
   const accounts = accountsQ.rows.map((r) => ({ id: r.id, ...r.data }));
   const appleAccounts = accounts.filter((a) => a.provider === 'appleAds');
@@ -359,8 +363,15 @@ export function AdsPage() {
           {/* Campaigns — live status + range metrics + run/pause control */}
           <div className="mt-5 overflow-x-auto rounded-xl border bg-card shadow-card">
             <div className="flex items-center justify-between border-b px-4 py-3">
-              <h3 className="text-[13px] font-semibold">Campaigns</h3>
-              {campaignsQ.isFetching && <span className="text-[11px] text-muted-foreground">refreshing…</span>}
+              <h3 className="flex items-center gap-2 text-[13px] font-semibold">
+                Campaigns
+                {campaignsQ.isFetching && <span className="text-[11px] font-normal text-muted-foreground">refreshing…</span>}
+              </h3>
+              {appleAccounts.some((a) => a.connected) && (
+                <Button size="sm" onClick={() => setCreateCampaignOpen(true)}>
+                  <Plus className="size-3.5" /> New campaign
+                </Button>
+              )}
             </div>
             {campaignsQ.isLoading ? (
               <div className="space-y-2 p-4">{[0, 1].map((i) => <Skeleton key={i} className="h-10" />)}</div>
@@ -406,24 +417,35 @@ export function AdsPage() {
                       <td className="px-4 py-2 text-right tabular-nums">{cnt(c.installs)}</td>
                       <td className="px-4 py-2 text-right tabular-nums">{c.installs > 0 ? fmt(c.spend / c.installs) : '—'}</td>
                       <td className="px-4 py-2 text-right">
-                        {c.status === 'ENABLED' ? (
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            loading={setStatus.isPending && setStatus.variables?.campaignId === c.id}
-                            onClick={() => setStatus.mutate({ accountId: c.accountId, campaignId: c.id, status: 'PAUSED' })}
-                          >
-                            <Pause className="size-3.5" /> Stop
-                          </Button>
-                        ) : c.status === 'PAUSED' ? (
-                          <Button
-                            size="sm"
-                            loading={setStatus.isPending && setStatus.variables?.campaignId === c.id}
-                            onClick={() => setStatus.mutate({ accountId: c.accountId, campaignId: c.id, status: 'ENABLED' })}
-                          >
-                            <Play className="size-3.5" /> Run
-                          </Button>
-                        ) : null}
+                        <div className="flex items-center justify-end gap-1.5">
+                          {c.status === 'ENABLED' ? (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              loading={setStatus.isPending && setStatus.variables?.campaignId === c.id}
+                              onClick={() => setStatus.mutate({ accountId: c.accountId, campaignId: c.id, status: 'PAUSED' })}
+                            >
+                              <Pause className="size-3.5" /> Stop
+                            </Button>
+                          ) : c.status === 'PAUSED' ? (
+                            <Button
+                              size="sm"
+                              loading={setStatus.isPending && setStatus.variables?.campaignId === c.id}
+                              onClick={() => setStatus.mutate({ accountId: c.accountId, campaignId: c.id, status: 'ENABLED' })}
+                            >
+                              <Play className="size-3.5" /> Run
+                            </Button>
+                          ) : null}
+                          {c.status !== 'UNKNOWN' && (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => setManageTarget({ accountId: c.accountId, id: c.id, name: c.name, status: c.status, dailyBudget: c.dailyBudget ?? null, countries: c.countries ?? [], accountLabel: c.accountLabel })}
+                            >
+                              <Settings2 className="size-3.5" /> Manage
+                            </Button>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   ))}
@@ -439,6 +461,17 @@ export function AdsPage() {
 
       <AppleAdsDialog open={appleOpen} onOpenChange={setAppleOpen} />
       <AdmobDialog open={admobOpen} onOpenChange={setAdmobOpen} />
+      <CampaignManagerDialog
+        open={!!manageTarget}
+        onOpenChange={(o) => { if (!o) setManageTarget(null); }}
+        campaign={manageTarget}
+        days={Number(range)}
+      />
+      <CreateCampaignDialog
+        open={createCampaignOpen}
+        onOpenChange={setCreateCampaignOpen}
+        accounts={appleAccounts.filter((a) => a.connected).map((a) => ({ id: a.id, label: a.label }))}
+      />
       <ConfirmDialog
         open={!!removeTarget}
         onOpenChange={() => setRemoveTarget(null)}

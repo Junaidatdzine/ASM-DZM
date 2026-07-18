@@ -1,6 +1,10 @@
 import { httpsCallable } from 'firebase/functions';
 import type {
+  AdsAdGroupLive,
   AdsCampaignLive,
+  AdsKeywordLive,
+  AdsMetricRow,
+  AdsNegativeKeyword,
   AgeRatingValues,
   AiGrant,
   BuildRef,
@@ -381,7 +385,44 @@ export const api = {
     { ok: boolean; status: string }
   >('adsCampaignSetStatus'),
   adsSync: call<{ days?: number }, { days: number; providers: string[] }>('adsSync', 310_000),
+
+  // Apple Search Ads management
+  adsAdGroupsList: call<{ accountId: string; campaignId: string; days?: number }, { adGroups: AdsAdGroupLive[] }>('adsAdGroupsList', 130_000),
+  adsAdGroupCreate: call<
+    { accountId: string; campaignId: string; name: string; defaultBid: Money },
+    { adGroup: AdsAdGroupLive }
+  >('adsAdGroupCreate'),
+  adsAdGroupUpdate: call<
+    { accountId: string; campaignId: string; adGroupId: string; name?: string; status?: 'ENABLED' | 'PAUSED'; defaultBid?: Money },
+    Ok
+  >('adsAdGroupUpdate'),
+  adsKeywordsList: call<{ accountId: string; campaignId: string; adGroupId: string; days?: number }, { keywords: AdsKeywordLive[] }>('adsKeywordsList', 130_000),
+  adsKeywordsCreate: call<
+    { accountId: string; campaignId: string; adGroupId: string; keywords: Array<{ text: string; matchType: 'EXACT' | 'BROAD'; bid: Money }> },
+    { created: number }
+  >('adsKeywordsCreate'),
+  adsKeywordUpdate: call<
+    { accountId: string; campaignId: string; adGroupId: string; keywordId: string; status?: 'ACTIVE' | 'PAUSED'; bid?: Money },
+    Ok
+  >('adsKeywordUpdate'),
+  adsNegativeKeywordsList: call<{ accountId: string; campaignId: string; adGroupId: string }, { negatives: AdsNegativeKeyword[] }>('adsNegativeKeywordsList'),
+  adsNegativeKeywordsAdd: call<
+    { accountId: string; campaignId: string; adGroupId: string; keywords: Array<{ text: string; matchType: 'EXACT' | 'BROAD' }> },
+    Ok
+  >('adsNegativeKeywordsAdd'),
+  adsNegativeKeywordDelete: call<{ accountId: string; campaignId: string; adGroupId: string; keywordId: string }, Ok>('adsNegativeKeywordDelete'),
+  adsSearchTermsList: call<{ accountId: string; campaignId: string; adGroupId: string; days?: number }, { terms: AdsMetricRow[] }>('adsSearchTermsList', 130_000),
+  adsCampaignCreate: call<
+    { accountId: string; name: string; adamId: number; currency: string; budget: number; dailyBudget: number; countries: string[] },
+    { campaign: AdsCampaignLive }
+  >('adsCampaignCreate', 130_000),
+  adsCampaignUpdate: call<
+    { accountId: string; campaignId: string; name?: string; status?: 'ENABLED' | 'PAUSED'; currency: string; dailyBudget?: number; countries?: string[] },
+    Ok
+  >('adsCampaignUpdate'),
 };
+
+type Money = { amount: number; currency: string };
 
 /** Extract a human-readable message from a callable error. */
 export function callableMessage(err: unknown): string {
