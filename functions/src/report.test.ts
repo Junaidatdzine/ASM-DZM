@@ -4,12 +4,12 @@ import { describe, expect, it, vi } from 'vitest';
  * In-memory Firestore stand-in for buildDailyReport. Fixtures are built in
  * vi.hoisted so they exist before the mock factory runs during import.
  *
- * Store US: 30 days @ $10/day proceeds (app Alpha $6, Beta $4), 5 downloads, 6 units.
- * Store DE: 30 days @ $20/day proceeds (app Alpha $20),          5 downloads, 6 units.
- * Ads:      30 days @ $2 spend / 3 installs / $1 AdMob per day.
+ * Store US: 30 days @ $10/day earnings (apps 6754688919 $6, 6480001111 $4), 5 downloads.
+ * Store DE: 30 days @ $20/day earnings (app 6754688919 $20),                 5 downloads.
+ * Subscriptions US: 2 trial / 1 paid / 1 cancel per day. DE: 3 trial / 2 paid / 0 cancel.
  *
- * Expected 7-day totals:  proceeds $210, downloads 70, units 84.
- * Expected 30-day totals: proceeds $900, downloads 300, units 360.
+ * Expected 7-day earnings $210, 30-day $900. 7-day downloads 70, 30-day 300.
+ * Expected 7-day subs: 35 trials, 21 paid, 7 cancels. 30-day: 150 / 90 / 30.
  */
 const fx = vi.hoisted(() => {
   const financeDay = (
@@ -17,146 +17,135 @@ const fx = vi.hoisted(() => {
     proceedsUsd: number,
     perApp: Record<string, { proceedsUsd: number; downloads: number; name: string }>,
   ) => ({
-    date,
-    proceedsUsd,
-    downloads: 5,
-    units: 6,
-    proceeds: {},
-    perApp: Object.fromEntries(
-      Object.entries(perApp).map(([id, a]) => [id, { ...a, units: 0, proceeds: {} }]),
-    ),
+    date, proceedsUsd, downloads: 5, units: 6, proceeds: {},
+    perApp: Object.fromEntries(Object.entries(perApp).map(([id, a]) => [id, { ...a, units: 0, proceeds: {} }])),
     fetchedAt: null,
   });
-
-  const days = (proceedsUsd: number, perApp: (d: string) => Record<string, { proceedsUsd: number; downloads: number; name: string }>) => {
-    const arr = [] as { id: string; data: ReturnType<typeof financeDay> }[];
+  const finDays = (proceedsUsd: number, perApp: Record<string, { proceedsUsd: number; downloads: number; name: string }>) => {
+    const arr: { id: string; data: ReturnType<typeof financeDay> }[] = [];
     for (let dom = 30; dom >= 1; dom--) {
       const date = `2026-06-${String(dom).padStart(2, '0')}`;
-      arr.push({ id: date, data: financeDay(date, proceedsUsd, perApp(date)) });
+      arr.push({ id: date, data: financeDay(date, proceedsUsd, perApp) });
     }
-    return arr; // already newest-first (dom 30 -> 1)
+    return arr; // newest-first
+  };
+  const subDays = (trialStarts: number, newPaid: number, cancellations: number) => {
+    const arr: { id: string; data: { date: string; trialStarts: number; newPaid: number; cancellations: number; fetchedAt: null } }[] = [];
+    for (let dom = 30; dom >= 1; dom--) {
+      const date = `2026-06-${String(dom).padStart(2, '0')}`;
+      arr.push({ id: date, data: { date, trialStarts, newPaid, cancellations, fetchedAt: null } });
+    }
+    return arr;
   };
 
-  const finance: Record<string, { id: string; data: ReturnType<typeof financeDay> }[]> = {
-    s1: days(10, () => ({
-      a1: { proceedsUsd: 6, downloads: 3, name: 'Alpha' },
-      a2: { proceedsUsd: 4, downloads: 2, name: 'Beta' },
-    })),
-    s2: days(20, () => ({ a1: { proceedsUsd: 20, downloads: 5, name: 'Alpha' } })),
+  const finance: Record<string, ReturnType<typeof finDays>> = {
+    s1: finDays(10, {
+      '6754688919': { proceedsUsd: 6, downloads: 3, name: 'AI Detector' },
+      '6480001111': { proceedsUsd: 4, downloads: 2, name: 'PetFun AI' },
+    }),
+    s2: finDays(20, { '6754688919': { proceedsUsd: 20, downloads: 5, name: 'AI Detector' } }),
   };
-
+  const subs: Record<string, ReturnType<typeof subDays>> = {
+    s1: subDays(2, 1, 1),
+    s2: subDays(3, 2, 0),
+  };
   const apps: Record<string, { id: string; data: { name: string } }[]> = {
-    s1: [
-      { id: 'a1', data: { name: 'Alpha' } },
-      { id: 'a2', data: { name: 'Beta' } },
-    ],
-    s2: [{ id: 'a1', data: { name: 'Alpha' } }],
+    s1: [{ id: '6754688919', data: { name: 'AI Detector' } }, { id: '6480001111', data: { name: 'PetFun AI' } }],
+    s2: [{ id: '6754688919', data: { name: 'AI Detector' } }],
   };
-
-  const adsDays = [] as { id: string; data: unknown }[];
+  const adsDays: { id: string; data: unknown }[] = [];
   for (let dom = 30; dom >= 1; dom--) {
     const date = `2026-06-${String(dom).padStart(2, '0')}`;
-    adsDays.push({
-      id: date,
-      data: {
-        date,
-        appleAds: { spend: {}, spendUsd: 2, taps: 0, impressions: 0, installs: 3, campaigns: [] },
-        admob: { earnings: {}, earningsUsd: 1 },
-        fetchedAt: null,
-      },
-    });
+    adsDays.push({ id: date, data: { date, appleAds: { spend: {}, spendUsd: 2, taps: 0, impressions: 0, installs: 3, campaigns: [] }, admob: { earnings: {}, earningsUsd: 1 }, fetchedAt: null } });
   }
-
-  const stores = [
-    { id: 's1', data: { name: 'US Store' } },
-    { id: 's2', data: { name: 'DE Store' } },
-  ];
-
-  return { finance, apps, adsDays, stores };
+  const stores = [{ id: 's1', data: { name: 'US Store' } }, { id: 's2', data: { name: 'DE Store' } }];
+  return { finance, subs, apps, adsDays, stores };
 });
 
-// Chainable query stub: orderBy/select are no-ops, limit slices, get() snapshots.
 function query(docs: { id: string; data: unknown }[]) {
   const make = (arr: { id: string; data: unknown }[]): any => ({
     orderBy: () => make(arr),
     select: () => make(arr),
     limit: (n: number) => make(arr.slice(0, n)),
-    get: async () => ({
-      empty: arr.length === 0,
-      docs: arr.map((d) => ({ id: d.id, data: () => d.data })),
-    }),
+    get: async () => ({ empty: arr.length === 0, docs: arr.map((d) => ({ id: d.id, data: () => d.data })) }),
   });
   return make(docs);
 }
 
 vi.mock('./lib/firestore', () => ({
   Timestamp: { now: () => ({}) },
-  db: () => ({
-    collection: (name: string) => (name === 'stores' ? query(fx.stores) : query([])),
-  }),
+  db: () => ({ collection: (name: string) => (name === 'stores' ? query(fx.stores) : query([])) }),
   refs: {
     store: (id: string) => ({
-      collection: (name: string) =>
-        name === 'financeDays' ? query(fx.finance[id] ?? []) : query(fx.apps[id] ?? []),
+      collection: (name: string) => {
+        if (name === 'financeDays') return query(fx.finance[id] ?? []);
+        if (name === 'subscriptionDays') return query(fx.subs[id] ?? []);
+        return query(fx.apps[id] ?? []);
+      },
     }),
     adsDays: () => query(fx.adsDays),
   },
 }));
 
-// Imported after the mock is registered.
 import { buildDailyReport } from './lib/report';
 
-describe('buildDailyReport — elegant 7 & 30 day report', () => {
-  it('renders a plain-English headline with explicit date ranges', async () => {
-    const report = await buildDailyReport();
-
-    // Newest fixture day is 2026-06-30, so 7d window = Jun 24–30, 30d = Jun 1–30.
-    expect(report.html).toContain('In the last 7 days (Jun 24 – 30), 2 stores earned');
-    expect(report.html).toContain('7-day window Jun 24 – 30 · 30-day window Jun 1 – 30');
+describe('buildDailyReport — simple, mobile-friendly report', () => {
+  it('leads with a plain-English headline and explicit date ranges', async () => {
+    const r = await buildDailyReport();
+    expect(r.html).toContain('In the last 7 days (Jun 24 – 30), 2 stores earned <strong>$210.00</strong>');
+    expect(r.html).toContain('7-day window Jun 24 – 30 · 30-day window Jun 1 – 30');
   });
 
-  it('shows 7-day headline metrics with 30-day totals and daily averages', async () => {
-    const report = await buildDailyReport();
+  it('puts a Subscriptions section (trials/activations) before Sales, and drops Units', async () => {
+    const r = await buildDailyReport();
+    const subsAt = r.html.indexOf('>Subscriptions<');
+    const salesAt = r.html.indexOf('>Sales<');
+    expect(subsAt).toBeGreaterThan(-1);
+    expect(salesAt).toBeGreaterThan(subsAt); // subscriptions rendered first
 
-    expect(report.html).toContain('Proceeds · 7 days');
-    expect(report.html).toContain('$210.00'); // 7-day proceeds
-    expect(report.html).toContain('$900.00 over 30 days · $30.00/day avg'); // 30d total + avg
-    expect(report.html).toContain('Downloads · 7 days');
-    expect(report.html).toContain('300 over 30 days · 10/day avg');
-    expect(report.html).toContain('Units · 7 days');
+    expect(r.html).toContain('Free trials · 7 days');
+    expect(r.html).toContain('New subscriptions · 7 days');
+    expect(r.html).toContain('Cancellations · 7 days');
+    expect(r.html).toContain('New this week: <strong>35</strong> free trials and <strong>21</strong> new paid subscriptions.');
+    expect(r.html).toContain('150 over 30 days'); // 30-day trials
+
+    // Units removed entirely.
+    expect(r.html).not.toContain('Units');
+    expect(r.html).not.toContain('(day)');
   });
 
-  it('renders week-over-week trend chips (flat when the two windows match)', async () => {
-    const report = await buildDailyReport();
-    // The fixture is uniform, so this week equals the prior week → 0% chip.
-    expect(report.html).toContain('→ 0%');
+  it('uses simple wording (Earnings, not Units/Proceeds jargon) with 30-day + daily average', async () => {
+    const r = await buildDailyReport();
+    expect(r.html).toContain('Earnings · 7 days');
+    expect(r.html).toContain('$900.00 over 30 days · $30.00/day');
+    expect(r.html).toContain('Downloads · 7 days');
   });
 
-  it('summarises ads, net, a stores total row, and an explanatory legend', async () => {
-    const report = await buildDailyReport();
+  it('links each app to its App Store page', async () => {
+    const r = await buildDailyReport();
+    expect(r.html).toContain('href="https://apps.apple.com/app/id6754688919"');
+    expect(r.html).toContain('View ↗');
+  });
 
-    expect(report.html).toContain('Net · 7 days');
-    expect(report.html).toContain('$203.00'); // net 7d = 210 + 7 admob - 14 spend
-    expect(report.html).toContain('$870.00 over 30 days'); // net 30d = 900 + 30 - 60
-    expect(report.html).toContain('21 installs');
+  it('is a responsive HTML document with a stacking media query', async () => {
+    const r = await buildDailyReport();
+    expect(r.html.startsWith('<!doctype html>')).toBe(true);
+    expect(r.html).toContain('name="viewport"');
+    expect(r.html).toContain('@media only screen and (max-width:600px)');
+    expect(r.html).toContain('.tcell{display:block');
+  });
 
-    // Stores table has a bold "All stores" total row.
-    expect(report.html).toContain('All stores');
-    expect(report.html).toContain('DE Store');
-    expect(report.html).toContain('Top apps');
-    expect(report.html).toContain('Alpha');
-
-    // Legend explains the terms.
-    expect(report.html).toContain('How to read this.');
-    expect(report.html).toContain('proceeds + AdMob earnings − Apple Ads spend.');
-
-    // No stale per-day headline.
-    expect(report.html).not.toContain('(day)');
+  it('keeps ads/net and an All-stores total row, and a plain legend', async () => {
+    const r = await buildDailyReport();
+    expect(r.html).toContain('Net · 7 days');
+    expect(r.html).toContain('$203.00'); // 210 + 7 admob - 14 spend
+    expect(r.html).toContain('All stores');
+    expect(r.html).toContain('How to read this.');
   });
 
   it('keeps a stable subject and summary for the audit trail', async () => {
-    const report = await buildDailyReport();
-    expect(report.subject).toBe('Dzinemedia ASM · Report 2026-06-30 — $210.00 last 7d · $900.00 last 30d');
-    expect(report.summary).toBe('$210.00 proceeds 7d · $900.00 30d · 70 downloads 7d · 2 stores');
+    const r = await buildDailyReport();
+    expect(r.subject).toBe('Dzinemedia ASM · Report 2026-06-30 — $210.00 earned last 7d · $900.00 last 30d');
+    expect(r.summary).toBe('$210.00 earned 7d · $900.00 30d · 70 downloads 7d · 2 stores');
   });
 });

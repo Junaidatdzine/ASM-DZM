@@ -1,4 +1,4 @@
-import type { AdsDayDoc, FinanceDayDoc, StoreDoc } from '@asm/shared';
+import type { AdsDayDoc, FinanceDayDoc, StoreDoc, SubsDayDoc } from '@asm/shared';
 import { isEmulator } from '../config';
 import { AppError } from './errors';
 import { Timestamp, db, refs } from './firestore';
@@ -48,20 +48,31 @@ const trendChip = (cur: number, prev: number) => {
   return `<span style="${style(up ? '#1a7f43' : '#c5221f', up ? '#e6f4ea' : '#fce8e6')}">${up ? '▲' : '▼'} ${Math.abs(rounded)}%</span>`;
 };
 
-interface Totals {
+/** App Store listing link for an app whose id is its numeric Apple ID (skips mock ids). */
+const storeLink = (appId: string) =>
+  /^\d+$/.test(appId)
+    ? ` <a href="https://apps.apple.com/app/id${appId}" style="color:#1C75BC;font-weight:600;white-space:nowrap;text-decoration:none">View ↗</a>`
+    : '';
+
+interface Sales {
   proceedsUsd: number;
   downloads: number;
-  units: number;
+}
+interface Subs {
+  trialStarts: number;
+  newPaid: number;
+  cancellations: number;
 }
 interface StoreRow {
   name: string;
-  week: Totals;
-  prior: Totals;
-  month: Totals;
+  week: Sales;
+  prior: Sales;
+  month: Sales;
 }
 interface AppRow {
   name: string;
   store: string;
+  appId: string;
   weekProceedsUsd: number;
   monthProceedsUsd: number;
   weekDownloads: number;
@@ -74,11 +85,25 @@ export interface DailyReport {
   summary: string;
 }
 
+/** Media queries that stack the metric tiles and tighten tables on phones. */
+const EMAIL_CSS = `
+  body{margin:0;padding:0;background:#eef0f3;-webkit-text-size-adjust:100%;-ms-text-size-adjust:100%}
+  img{border:0;line-height:100%;outline:none;text-decoration:none}
+  table{border-collapse:collapse}
+  @media only screen and (max-width:600px){
+    .container{width:100% !important;border-radius:0 !important}
+    .pad{padding:20px 16px !important}
+    .tcell{display:block !important;width:100% !important;box-sizing:border-box !important;margin:0 0 8px 0 !important}
+    .tiles{width:100% !important}
+    .num{font-size:21px !important}
+    .tbl th,.tbl td{padding-left:7px !important;padding-right:7px !important;font-size:12px !important}
+  }
+`;
+
 /**
- * Aggregate the trailing 7- and 30-day windows across every store that has
- * finance data, and render a self-contained HTML email (inline styles only).
- * The 7-day window also carries the previous 7 days so each headline metric
- * can show a week-over-week trend.
+ * Aggregate the trailing 7- and 30-day windows across every store, plus the
+ * previous 7 days for a week-over-week trend, and render a mobile-responsive
+ * HTML email. Sections in reading order: subscriptions → sales → advertising.
  */
 export async function buildDailyReport(): Promise<DailyReport> {
   const storesSnap = await db().collection('stores').get();
@@ -86,14 +111,24 @@ export async function buildDailyReport(): Promise<DailyReport> {
 
   const storeRows: StoreRow[] = [];
   const appTotals = new Map<string, AppRow>();
+  const subsWeek: Subs = { trialStarts: 0, newPaid: 0, cancellations: 0 };
+  const subsPrior: Subs = { trialStarts: 0, newPaid: 0, cancellations: 0 };
+  const subsMonth: Subs = { trialStarts: 0, newPaid: 0, cancellations: 0 };
+  let haveSubs = false;
   let unmatchedMonthUsd = 0;
   let latestDate = '';
 
-  const aggregate = (days: FinanceDayDoc[]): Totals => ({
+  const aggregate = (days: FinanceDayDoc[]): Sales => ({
     proceedsUsd: days.reduce((sum, d) => sum + (d.proceedsUsd ?? 0), 0),
     downloads: days.reduce((sum, d) => sum + d.downloads, 0),
-    units: days.reduce((sum, d) => sum + d.units, 0),
   });
+  const addSubs = (target: Subs, days: SubsDayDoc[]) => {
+    for (const d of days) {
+      target.trialStarts += d.trialStarts ?? 0;
+      target.newPaid += d.newPaid ?? 0;
+      target.cancellations += d.cancellations ?? 0;
+    }
+  };
 
   for (const store of stores) {
     const daysSnap = await refs
@@ -102,56 +137,72 @@ export async function buildDailyReport(): Promise<DailyReport> {
       .orderBy('date', 'desc')
       .limit(MONTH_DAYS)
       .get();
-    if (daysSnap.empty) continue;
-    // Ordered newest-first: [0..6] is this week, [7..13] the week before it.
-    const days = daysSnap.docs.map((d) => d.data() as FinanceDayDoc);
-    if (days[0]!.date > latestDate) latestDate = days[0]!.date;
+    if (!daysSnap.empty) {
+      // Ordered newest-first: [0..6] is this week, [7..13] the week before it.
+      const days = daysSnap.docs.map((d) => d.data() as FinanceDayDoc);
+      if (days[0]!.date > latestDate) latestDate = days[0]!.date;
+      storeRows.push({
+        name: store.data.name,
+        week: aggregate(days.slice(0, WEEK_DAYS)),
+        prior: aggregate(days.slice(WEEK_DAYS, WEEK_DAYS * 2)),
+        month: aggregate(days),
+      });
 
-    storeRows.push({
-      name: store.data.name,
-      week: aggregate(days.slice(0, WEEK_DAYS)),
-      prior: aggregate(days.slice(WEEK_DAYS, WEEK_DAYS * 2)),
-      month: aggregate(days),
-    });
+      // App names live in the apps collection; perApp docs carry a cached fallback name.
+      const appsSnap = await refs.store(store.id).collection('apps').select('name').get();
+      const appNames = new Map(appsSnap.docs.map((a) => [a.id, (a.data() as { name?: string }).name ?? a.id]));
+      days.forEach((day, idx) => {
+        const inWeek = idx < WEEK_DAYS;
+        for (const [appId, stat] of Object.entries(day.perApp ?? {})) {
+          const proceeds = stat.proceedsUsd ?? 0;
+          // Rows that don't resolve to a real app (e.g. subscription products like
+          // "yearly") are refined away from Top apps — their proceeds already count
+          // in the store and window totals, and the next sync re-attributes them.
+          if (!appNames.has(appId)) {
+            unmatchedMonthUsd += proceeds;
+            continue;
+          }
+          const key = `${store.id}:${appId}`;
+          const row = appTotals.get(key) ?? {
+            name: appNames.get(appId) ?? stat.name ?? appId,
+            store: store.data.name,
+            appId,
+            weekProceedsUsd: 0,
+            monthProceedsUsd: 0,
+            weekDownloads: 0,
+            monthDownloads: 0,
+          };
+          row.monthProceedsUsd += proceeds;
+          row.monthDownloads += stat.downloads;
+          if (inWeek) {
+            row.weekProceedsUsd += proceeds;
+            row.weekDownloads += stat.downloads;
+          }
+          appTotals.set(key, row);
+        }
+      });
+    }
 
-    // App names live in the apps collection; perApp docs carry a cached fallback name.
-    const appsSnap = await refs.store(store.id).collection('apps').select('name').get();
-    const appNames = new Map(appsSnap.docs.map((a) => [a.id, (a.data() as { name?: string }).name ?? a.id]));
-    days.forEach((day, idx) => {
-      const inWeek = idx < WEEK_DAYS;
-      for (const [appId, stat] of Object.entries(day.perApp ?? {})) {
-        const proceeds = stat.proceedsUsd ?? 0;
-        // Rows that don't resolve to a real app (e.g. subscription products like
-        // "yearly") are refined away from Top apps — their proceeds already count
-        // in the store and window totals, and the next sync re-attributes them.
-        if (!appNames.has(appId)) {
-          unmatchedMonthUsd += proceeds;
-          continue;
-        }
-        const key = `${store.id}:${appId}`;
-        const row = appTotals.get(key) ?? {
-          name: appNames.get(appId) ?? stat.name ?? appId,
-          store: store.data.name,
-          weekProceedsUsd: 0,
-          monthProceedsUsd: 0,
-          weekDownloads: 0,
-          monthDownloads: 0,
-        };
-        row.monthProceedsUsd += proceeds;
-        row.monthDownloads += stat.downloads;
-        if (inWeek) {
-          row.weekProceedsUsd += proceeds;
-          row.weekDownloads += stat.downloads;
-        }
-        appTotals.set(key, row);
-      }
-    });
+    // Subscription lifecycle events (trials/activations) — present only when the
+    // store has subscriptions; otherwise the collection is empty and the section hides.
+    const subsSnap = await refs
+      .store(store.id)
+      .collection('subscriptionDays')
+      .orderBy('date', 'desc')
+      .limit(MONTH_DAYS)
+      .get();
+    if (!subsSnap.empty) {
+      haveSubs = true;
+      const sdays = subsSnap.docs.map((d) => d.data() as SubsDayDoc);
+      addSubs(subsMonth, sdays);
+      addSubs(subsWeek, sdays.slice(0, WEEK_DAYS));
+      addSubs(subsPrior, sdays.slice(WEEK_DAYS, WEEK_DAYS * 2));
+    }
   }
 
-  const sumWindow = (pick: (r: StoreRow) => Totals): Totals => ({
+  const sumWindow = (pick: (r: StoreRow) => Sales): Sales => ({
     proceedsUsd: storeRows.reduce((t, r) => t + pick(r).proceedsUsd, 0),
     downloads: storeRows.reduce((t, r) => t + pick(r).downloads, 0),
-    units: storeRows.reduce((t, r) => t + pick(r).units, 0),
   });
   const totalWeek = sumWindow((r) => r.week);
   const totalPrior = sumWindow((r) => r.prior);
@@ -186,32 +237,64 @@ export async function buildDailyReport(): Promise<DailyReport> {
   const monthRange = latestDate ? fmtRange(shiftDate(latestDate, -(MONTH_DAYS - 1)), latestDate) : '';
   const storeWord = storeRows.length === 1 ? 'store' : 'stores';
   const headline = storeRows.length
-    ? `In the last 7 days${weekRange ? ` (${weekRange})` : ''}, ${storeRows.length} ${storeWord} earned <strong>${money(totalWeek.proceedsUsd)}</strong> in proceeds from <strong>${count(totalWeek.downloads)}</strong> downloads${haveAds ? ` — <strong>${money(netWeek)}</strong> net after ads` : ''}.`
-    : 'No finance data has synced yet — this report will fill in once a store finishes its first sales sync.';
+    ? `In the last 7 days${weekRange ? ` (${weekRange})` : ''}, ${storeRows.length} ${storeWord} earned <strong>${money(totalWeek.proceedsUsd)}</strong> from <strong>${count(totalWeek.downloads)}</strong> downloads${haveAds ? ` — <strong>${money(netWeek)}</strong> after ad costs` : ''}.`
+    : 'No sales data has synced yet — this report will fill in once a store finishes its first sync.';
+  const subHeadline = haveSubs
+    ? `<div style="font-size:13px;color:#374151;margin-top:6px">New this week: <strong>${count(subsWeek.trialStarts)}</strong> free trials and <strong>${count(subsWeek.newPaid)}</strong> new paid subscriptions.</div>`
+    : '';
 
-  // ---- presentational helpers (inline styles only; email clients ignore <style>) ----
+  // ---- presentational helpers (inline styles + a few classes for the media query) ----
   const brandBar =
-    '<div style="height:6px;background:linear-gradient(90deg,#8DC63F,#F7941D,#EE1C25,#EC008C,#662D91,#1C75BC,#00A79D);border-radius:3px 3px 0 0"></div>';
-  const metricTile = (label: string, value: string, chip: string, sub: string) =>
-    `<td width="33%" style="padding:14px 16px;background:#f8f9fb;border:1px solid #eef0f4;border-radius:12px;vertical-align:top">
+    '<div style="height:6px;background:linear-gradient(90deg,#8DC63F,#F7941D,#EE1C25,#EC008C,#662D91,#1C75BC,#00A79D)"></div>';
+  const metricTile = (width: string, label: string, value: string, chip: string, sub: string) =>
+    `<td class="tcell" width="${width}" style="padding:14px 16px;background:#f8f9fb;border:1px solid #eef0f4;border-radius:12px;vertical-align:top">
        <div style="font-size:11px;color:#6b7280;text-transform:uppercase;letter-spacing:.05em;font-weight:600">${label}</div>
-       <div style="margin-top:5px;white-space:nowrap"><span style="font-size:23px;font-weight:800;color:#111827;letter-spacing:-.01em">${value}</span>${chip}</div>
+       <div style="margin-top:5px"><span class="num" style="font-size:23px;font-weight:800;color:#111827;letter-spacing:-.01em">${value}</span>${chip}</div>
        <div style="font-size:11px;color:#6b7280;margin-top:4px">${sub}</div>
      </td>`;
   const th = (t: string, right = false) =>
     `<th style="text-align:${right ? 'right' : 'left'};padding:6px 10px;font-size:11px;color:#6b7280;text-transform:uppercase;letter-spacing:.04em;border-bottom:1px solid #e5e7eb;white-space:nowrap">${t}</th>`;
   const td = (t: string, right = false, bold = false) =>
     `<td style="text-align:${right ? 'right' : 'left'};padding:8px 10px;font-size:13px;color:#111827;${bold ? 'font-weight:700;' : ''}border-bottom:1px solid #f3f4f6;white-space:nowrap">${t}</td>`;
+  const tdName = (t: string) =>
+    `<td style="text-align:left;padding:8px 10px;font-size:13px;color:#111827;border-bottom:1px solid #f3f4f6">${t}</td>`;
   const tdTotal = (t: string, right = false) =>
     `<td style="text-align:${right ? 'right' : 'left'};padding:9px 10px;font-size:13px;font-weight:800;color:#111827;border-top:2px solid #e5e7eb;white-space:nowrap">${t}</td>`;
   const sectionHead = (title: string, hint: string) =>
-    `<div style="margin:24px 0 8px"><div style="font-size:14px;font-weight:700;color:#111827">${title}</div><div style="font-size:11px;color:#9ca3af;margin-top:1px">${hint}</div></div>`;
+    `<div style="margin:22px 0 8px"><div style="font-size:14px;font-weight:700;color:#111827">${title}</div><div style="font-size:11px;color:#9ca3af;margin-top:1px">${hint}</div></div>`;
+  const tileRow = (cells: string) =>
+    `<table role="presentation" class="tiles" width="100%" cellspacing="8" cellpadding="0" style="margin-top:2px"><tr>${cells}</tr></table>`;
+
+  const subsSection = haveSubs
+    ? sectionHead('Subscriptions', 'Free trials, new paid subscribers, and cancellations') +
+      tileRow(
+        metricTile('33%', 'Free trials · 7 days', count(subsWeek.trialStarts), trendChip(subsWeek.trialStarts, subsPrior.trialStarts), `${count(subsMonth.trialStarts)} over 30 days`) +
+        metricTile('33%', 'New subscriptions · 7 days', count(subsWeek.newPaid), trendChip(subsWeek.newPaid, subsPrior.newPaid), `${count(subsMonth.newPaid)} over 30 days`) +
+        metricTile('33%', 'Cancellations · 7 days', count(subsWeek.cancellations), '', `${count(subsMonth.cancellations)} over 30 days`),
+      )
+    : '';
+
+  const salesSection =
+    sectionHead('Sales', 'Downloads and earnings after Apple’s cut') +
+    tileRow(
+      metricTile('50%', 'Earnings · 7 days', money(totalWeek.proceedsUsd), trendChip(totalWeek.proceedsUsd, totalPrior.proceedsUsd), `${money(totalMonth.proceedsUsd)} over 30 days · ${avgMoney(totalWeek.proceedsUsd, WEEK_DAYS)}/day`) +
+      metricTile('50%', 'Downloads · 7 days', count(totalWeek.downloads), trendChip(totalWeek.downloads, totalPrior.downloads), `${count(totalMonth.downloads)} over 30 days · ${avgCount(totalWeek.downloads, WEEK_DAYS)}/day`),
+    );
+
+  const adsSection = haveAds
+    ? sectionHead('Advertising', 'Apple Ads spend, AdMob income, and what you keep') +
+      tileRow(
+        (ads.haveSpend ? metricTile('33%', 'Ad spend · 7 days', money(ads.weekSpend), '', `${money(ads.monthSpend)} over 30 days · ${count(ads.weekInstalls)} installs`) : '') +
+        (ads.haveAdmob ? metricTile('33%', 'Ad income · 7 days', money(ads.weekAdmob), '', `${money(ads.monthAdmob)} over 30 days`) : '') +
+        metricTile('33%', 'Net · 7 days', money(netWeek), trendChip(netWeek, netPrior), `${money(netMonth)} over 30 days`),
+      )
+    : '';
 
   const storeRowsHtml = [...storeRows]
     .sort((a, b) => b.month.proceedsUsd - a.month.proceedsUsd)
     .map(
       (row) =>
-        `<tr>${td(row.name)}${td(money(row.week.proceedsUsd), true)}${td(money(row.month.proceedsUsd), true, true)}${td(count(row.month.downloads), true)}</tr>`,
+        `<tr>${tdName(row.name)}${td(money(row.week.proceedsUsd), true)}${td(money(row.month.proceedsUsd), true, true)}${td(count(row.month.downloads), true)}</tr>`,
     )
     .join('');
   const storeTotalHtml = storeRows.length
@@ -220,25 +303,26 @@ export async function buildDailyReport(): Promise<DailyReport> {
   const appRowsHtml = topApps
     .map(
       (row, i) =>
-        `<tr>${td(`${i + 1}. ${row.name}`)}${td(row.store)}${td(money(row.weekProceedsUsd), true)}${td(money(row.monthProceedsUsd), true, true)}</tr>`,
+        `<tr>${tdName(`${i + 1}. ${row.name}${storeLink(row.appId)}`)}${td(row.store)}${td(money(row.weekProceedsUsd), true)}${td(money(row.monthProceedsUsd), true, true)}</tr>`,
     )
     .join('');
 
   const legend = `
-    <div style="border-top:1px solid #f3f4f6;margin-top:24px;padding-top:14px;font-size:11px;color:#9ca3af;line-height:1.7">
+    <div style="border-top:1px solid #f3f4f6;margin-top:22px;padding-top:14px;font-size:11px;color:#9ca3af;line-height:1.7">
       <strong style="color:#6b7280">How to read this.</strong>
-      <span style="color:#6b7280">Proceeds</span> are your earnings after Apple's commission (USD).
-      <span style="color:#6b7280">Downloads</span> count first-time installs; <span style="color:#6b7280">units</span> also include redownloads and updates.
-      ${haveAds ? `<span style="color:#6b7280">Net</span> = proceeds + AdMob earnings − Apple Ads spend. ` : ''}
+      <span style="color:#6b7280">Earnings</span> are what Apple pays you after its commission (USD).
+      <span style="color:#6b7280">Downloads</span> are new installs.
+      ${haveSubs ? `<span style="color:#6b7280">Free trials</span> and <span style="color:#6b7280">new subscriptions</span> are people who started this week; <span style="color:#6b7280">cancellations</span> turned off auto-renew. ` : ''}
+      ${haveAds ? `<span style="color:#6b7280">Net</span> = earnings + ad income − ad spend. ` : ''}
       Trend chips compare the last 7 days with the 7 days before them.
     </div>`;
 
-  const html = `
-<div style="max-width:640px;margin:0 auto;font-family:-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;background:#ffffff">
+  const body = `
+<div class="container" style="max-width:640px;margin:0 auto;font-family:-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;background:#ffffff;border-radius:12px;overflow:hidden;border:1px solid #e5e7eb">
   ${brandBar}
-  <div style="padding:22px 24px;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 12px 12px">
-    <table role="presentation" cellspacing="0" cellpadding="0"><tr>
-      <td style="vertical-align:middle;padding-right:11px">
+  <div class="pad" style="padding:22px 24px">
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0"><tr>
+      <td style="vertical-align:middle;padding-right:11px;width:36px">
         <div style="width:36px;height:36px;border-radius:10px;background:linear-gradient(135deg,#8DC63F 0%,#F7941D 20%,#EE1C25 40%,#EC008C 58%,#662D91 76%,#1C75BC 100%);text-align:center;line-height:36px;font-weight:800;font-size:18px;color:#ffffff">D</div>
       </td>
       <td style="vertical-align:middle">
@@ -249,35 +333,27 @@ export async function buildDailyReport(): Promise<DailyReport> {
 
     <div style="margin-top:16px;padding:13px 16px;border-left:3px solid #1C75BC;background:#f6faff;border-radius:0 8px 8px 0;font-size:14px;line-height:1.55;color:#111827">
       ${headline}
+      ${subHeadline}
     </div>
     <div style="font-size:11px;color:#9ca3af;margin-top:7px">
-      7-day window ${weekRange || '—'} · 30-day window ${monthRange || '—'} · proceeds after Apple's commission, USD
+      7-day window ${weekRange || '—'} · 30-day window ${monthRange || '—'} · earnings after Apple's commission, USD
     </div>
 
-    <table role="presentation" width="100%" cellspacing="8" style="margin-top:14px"><tr>
-      ${metricTile('Proceeds · 7 days', money(totalWeek.proceedsUsd), trendChip(totalWeek.proceedsUsd, totalPrior.proceedsUsd), `${money(totalMonth.proceedsUsd)} over 30 days · ${avgMoney(totalWeek.proceedsUsd, WEEK_DAYS)}/day avg`)}
-      ${metricTile('Downloads · 7 days', count(totalWeek.downloads), trendChip(totalWeek.downloads, totalPrior.downloads), `${count(totalMonth.downloads)} over 30 days · ${avgCount(totalWeek.downloads, WEEK_DAYS)}/day avg`)}
-      ${metricTile('Units · 7 days', count(totalWeek.units), trendChip(totalWeek.units, totalPrior.units), `${count(totalMonth.units)} over 30 days · ${avgCount(totalWeek.units, WEEK_DAYS)}/day avg`)}
-    </tr></table>
-    ${haveAds
-      ? `<table role="presentation" width="100%" cellspacing="8" style="margin-top:2px"><tr>
-      ${ads.haveSpend ? metricTile('Ad spend · Apple Ads', money(ads.weekSpend), '', `${money(ads.monthSpend)} over 30 days · ${count(ads.weekInstalls)} installs`) : ''}
-      ${ads.haveAdmob ? metricTile('Ad revenue · AdMob', money(ads.weekAdmob), '', `${money(ads.monthAdmob)} over 30 days`) : ''}
-      ${metricTile('Net · 7 days', money(netWeek), trendChip(netWeek, netPrior), `${money(netMonth)} over 30 days`)}
-    </tr></table>`
-      : ''}
+    ${subsSection}
+    ${salesSection}
+    ${adsSection}
 
-    ${sectionHead('Stores', `Ranked by 30-day proceeds${monthRange ? ` · ${monthRange}` : ''}`)}
-    <table role="presentation" width="100%" cellspacing="0">
-      <tr>${th('Store')}${th('Proceeds · 7d', true)}${th('Proceeds · 30d', true)}${th('Downloads · 30d', true)}</tr>
-      ${storeRowsHtml || `<tr>${td('No finance data yet', false)}</tr>`}
+    ${sectionHead('Stores', `Ranked by 30-day earnings${monthRange ? ` · ${monthRange}` : ''}`)}
+    <table role="presentation" class="tbl" width="100%" cellspacing="0" cellpadding="0">
+      <tr>${th('Store')}${th('Earnings · 7d', true)}${th('Earnings · 30d', true)}${th('Downloads · 30d', true)}</tr>
+      ${storeRowsHtml || `<tr>${tdName('No sales data yet')}</tr>`}
       ${storeTotalHtml}
     </table>
 
-    ${sectionHead('Top apps', 'Ranked by 30-day proceeds · top 10')}
-    <table role="presentation" width="100%" cellspacing="0">
-      <tr>${th('App')}${th('Store')}${th('Proceeds · 7d', true)}${th('Proceeds · 30d', true)}</tr>
-      ${appRowsHtml || `<tr>${td('No per-app data yet', false)}</tr>`}
+    ${sectionHead('Top apps', 'Ranked by 30-day earnings · tap “View” to open the App Store')}
+    <table role="presentation" class="tbl" width="100%" cellspacing="0" cellpadding="0">
+      <tr>${th('App')}${th('Store')}${th('Earnings · 7d', true)}${th('Earnings · 30d', true)}</tr>
+      ${appRowsHtml || `<tr>${tdName('No per-app data yet')}</tr>`}
     </table>
     ${unmatchedMonthUsd > 0.005 ? `<div style="font-size:11px;color:#9ca3af;margin-top:7px">Includes ${money(unmatchedMonthUsd)} of purchases still being matched to their apps (last 30 days) — the totals above are complete.</div>` : ''}
 
@@ -291,10 +367,24 @@ export async function buildDailyReport(): Promise<DailyReport> {
   </div>
 </div>`;
 
+  const html = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light only">
+<title>Dzinemedia ASM report</title>
+<style>${EMAIL_CSS}</style>
+</head>
+<body style="background:#eef0f3;margin:0;padding:16px 0">
+${body}
+</body>
+</html>`;
+
   return {
-    subject: `Dzinemedia ASM · Report ${latestDate || pktNow().date} — ${money(totalWeek.proceedsUsd)} last 7d · ${money(totalMonth.proceedsUsd)} last 30d`,
+    subject: `Dzinemedia ASM · Report ${latestDate || pktNow().date} — ${money(totalWeek.proceedsUsd)} earned last 7d · ${money(totalMonth.proceedsUsd)} last 30d`,
     html,
-    summary: `${money(totalWeek.proceedsUsd)} proceeds 7d · ${money(totalMonth.proceedsUsd)} 30d · ${count(totalWeek.downloads)} downloads 7d · ${storeRows.length} stores`,
+    summary: `${money(totalWeek.proceedsUsd)} earned 7d · ${money(totalMonth.proceedsUsd)} 30d · ${count(totalWeek.downloads)} downloads 7d · ${storeRows.length} stores`,
   };
 }
 
