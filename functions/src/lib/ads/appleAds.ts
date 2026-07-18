@@ -148,7 +148,12 @@ function mockCampaigns(): AppleAdsCampaign[] {
 
 /** Every campaign in the org with its live status and budget. */
 export async function appleAdsCampaigns(creds: AppleAdsCredentials): Promise<AppleAdsCampaign[]> {
-  if (isEmulator()) return mockCampaigns();
+  if (isEmulator()) {
+    return [
+      ...mockCampaigns(),
+      ...mockExtraCampaignList().map((c) => ({ ...c, status: mockStatuses.get(c.id) ?? c.status })),
+    ];
+  }
   const out: AppleAdsCampaign[] = [];
   for (let offset = 0; offset < 2000; offset += 200) {
     const doc = await api<{
@@ -279,4 +284,480 @@ export async function appleAdsDailyReport(
     },
   );
   return (doc.data?.reportingDataResponse?.row ?? []).flatMap((row) => mapAppleAdsRow(row));
+}
+
+// ============================================================================
+// Campaign management — ad groups, keywords, negatives, create/update, reports.
+// All write paths are money-affecting; the UI gates them behind confirmations.
+// ============================================================================
+
+const money = (amount: number, currency: string) => ({ amount: amount.toFixed(2), currency });
+const readMoney = (m?: { amount?: string; currency?: string } | null) =>
+  m?.amount ? { amount: Number(m.amount) || 0, currency: m.currency ?? 'USD' } : null;
+
+export interface AppleAdsAdGroup {
+  id: string;
+  campaignId: string;
+  name: string;
+  status: string; // ENABLED | PAUSED
+  servingStatus?: string;
+  defaultBid: { amount: number; currency: string } | null;
+}
+export interface AppleAdsKeyword {
+  id: string;
+  adGroupId: string;
+  text: string;
+  matchType: string; // EXACT | BROAD
+  status: string; // ACTIVE | PAUSED
+  bid: { amount: number; currency: string } | null;
+}
+export interface AppleAdsNegativeKeyword {
+  id: string;
+  text: string;
+  matchType: string; // EXACT | BROAD
+}
+/** Range-total metrics for one entity (ad group / keyword / search term). */
+export interface AppleAdsMetrics {
+  id: string;
+  label: string;
+  spendAmount: number;
+  spendCurrency: string;
+  taps: number;
+  impressions: number;
+  installs: number;
+}
+export interface AppleAdsCampaignInput {
+  name: string;
+  adamId: number;
+  budgetAmount: { amount: number; currency: string };
+  dailyBudgetAmount: { amount: number; currency: string };
+  countries: string[];
+}
+export interface AppleAdsCampaignPatch {
+  name?: string;
+  status?: 'ENABLED' | 'PAUSED';
+  dailyBudgetAmount?: { amount: number; currency: string };
+  countries?: string[];
+}
+export interface AppleAdsAdGroupInput {
+  name: string;
+  defaultBid: { amount: number; currency: string };
+}
+export interface AppleAdsKeywordInput {
+  text: string;
+  matchType: 'EXACT' | 'BROAD';
+  bid: { amount: number; currency: string };
+}
+
+// ---- Emulator-only mutable state so every create/edit flow is demoable offline ----
+let mockCounter = 1000;
+const nextMockId = () => `mock-${++mockCounter}`;
+const mockExtraCampaigns: AppleAdsCampaign[] = [];
+const mockAdGroups = new Map<string, AppleAdsAdGroup[]>();
+const mockKeywords = new Map<string, AppleAdsKeyword[]>();
+const mockNegatives = new Map<string, AppleAdsNegativeKeyword[]>();
+let mockSeeded = false;
+
+function seedMock() {
+  if (mockSeeded) return;
+  mockSeeded = true;
+  mockAdGroups.set('mock-c1', [
+    { id: 'mock-ag1', campaignId: 'mock-c1', name: 'Exact — brand', status: 'ENABLED', servingStatus: 'RUNNING', defaultBid: { amount: 1.2, currency: 'USD' } },
+    { id: 'mock-ag2', campaignId: 'mock-c1', name: 'Broad — discovery', status: 'ENABLED', servingStatus: 'RUNNING', defaultBid: { amount: 0.8, currency: 'USD' } },
+  ]);
+  mockAdGroups.set('mock-c2', [
+    { id: 'mock-ag3', campaignId: 'mock-c2', name: 'Worldwide — generic', status: 'PAUSED', servingStatus: 'AD_GROUP_PAUSED', defaultBid: { amount: 0.5, currency: 'USD' } },
+  ]);
+  mockKeywords.set('mock-ag1', [
+    { id: 'mock-k1', adGroupId: 'mock-ag1', text: 'ai detector', matchType: 'EXACT', status: 'ACTIVE', bid: { amount: 1.5, currency: 'USD' } },
+    { id: 'mock-k2', adGroupId: 'mock-ag1', text: 'humanize ai', matchType: 'EXACT', status: 'ACTIVE', bid: { amount: 1.3, currency: 'USD' } },
+  ]);
+  mockKeywords.set('mock-ag2', [
+    { id: 'mock-k3', adGroupId: 'mock-ag2', text: 'essay checker', matchType: 'BROAD', status: 'ACTIVE', bid: { amount: 0.9, currency: 'USD' } },
+    { id: 'mock-k4', adGroupId: 'mock-ag2', text: 'plagiarism checker', matchType: 'BROAD', status: 'PAUSED', bid: { amount: 0.7, currency: 'USD' } },
+  ]);
+  mockKeywords.set('mock-ag3', [
+    { id: 'mock-k5', adGroupId: 'mock-ag3', text: 'vocabulary builder', matchType: 'BROAD', status: 'ACTIVE', bid: { amount: 0.5, currency: 'USD' } },
+  ]);
+  mockNegatives.set(`c:mock-c1`, [{ id: 'mock-n1', text: 'free', matchType: 'BROAD' }]);
+}
+export function mockExtraCampaignList(): AppleAdsCampaign[] {
+  return mockExtraCampaigns;
+}
+function mockMetric(id: string, label: string): AppleAdsMetrics {
+  let h = 0;
+  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) | 0;
+  const x = Math.abs(Math.sin(h) * 1000) % 1;
+  return {
+    id,
+    label,
+    spendAmount: Math.round((5 + x * 40) * 100) / 100,
+    spendCurrency: 'USD',
+    taps: Math.round(20 + x * 180),
+    impressions: Math.round(600 + x * 3000),
+    installs: Math.round(4 + x * 40),
+  };
+}
+
+// ---- Ad groups ----
+
+export async function appleAdsAdGroups(creds: AppleAdsCredentials, campaignId: string): Promise<AppleAdsAdGroup[]> {
+  if (isEmulator()) {
+    seedMock();
+    return mockAdGroups.get(campaignId) ?? [];
+  }
+  const out: AppleAdsAdGroup[] = [];
+  for (let offset = 0; offset < 2000; offset += 200) {
+    const doc = await api<{
+      data?: Array<{ id?: number; name?: string; status?: string; servingStatus?: string; defaultBidAmount?: { amount?: string; currency?: string } }>;
+      pagination?: { totalResults?: number };
+    }>(creds, `/campaigns/${campaignId}/adgroups?limit=200&offset=${offset}`);
+    for (const g of doc.data ?? []) {
+      out.push({
+        id: String(g.id ?? ''),
+        campaignId,
+        name: g.name ?? String(g.id ?? ''),
+        status: g.status ?? 'ENABLED',
+        servingStatus: g.servingStatus,
+        defaultBid: readMoney(g.defaultBidAmount),
+      });
+    }
+    if ((doc.pagination?.totalResults ?? 0) <= offset + 200) break;
+  }
+  return out;
+}
+
+export async function appleAdsCreateAdGroup(
+  creds: AppleAdsCredentials,
+  campaignId: string,
+  input: AppleAdsAdGroupInput,
+): Promise<AppleAdsAdGroup> {
+  if (isEmulator()) {
+    seedMock();
+    const group: AppleAdsAdGroup = {
+      id: nextMockId(),
+      campaignId,
+      name: input.name,
+      status: 'ENABLED',
+      servingStatus: 'RUNNING',
+      defaultBid: input.defaultBid,
+    };
+    mockAdGroups.set(campaignId, [...(mockAdGroups.get(campaignId) ?? []), group]);
+    return group;
+  }
+  const doc = await api<{ data?: { id?: number } }>(creds, `/campaigns/${campaignId}/adgroups`, {
+    name: input.name,
+    startTime: new Date().toISOString().slice(0, 19) + '.000',
+    defaultBidAmount: money(input.defaultBid.amount, input.defaultBid.currency),
+    pricingModel: 'CPC',
+  });
+  return { id: String(doc.data?.id ?? ''), campaignId, name: input.name, status: 'ENABLED', defaultBid: input.defaultBid };
+}
+
+export async function appleAdsUpdateAdGroup(
+  creds: AppleAdsCredentials,
+  campaignId: string,
+  adGroupId: string,
+  patch: { name?: string; status?: 'ENABLED' | 'PAUSED'; defaultBid?: { amount: number; currency: string } },
+): Promise<void> {
+  if (isEmulator()) {
+    seedMock();
+    const groups = mockAdGroups.get(campaignId) ?? [];
+    const g = groups.find((x) => x.id === adGroupId);
+    if (g) {
+      if (patch.name !== undefined) g.name = patch.name;
+      if (patch.status !== undefined) g.status = patch.status;
+      if (patch.defaultBid !== undefined) g.defaultBid = patch.defaultBid;
+    }
+    return;
+  }
+  const body: Record<string, unknown> = {};
+  if (patch.name !== undefined) body.name = patch.name;
+  if (patch.status !== undefined) body.status = patch.status;
+  if (patch.defaultBid !== undefined) body.defaultBidAmount = money(patch.defaultBid.amount, patch.defaultBid.currency);
+  await api(creds, `/campaigns/${campaignId}/adgroups/${adGroupId}`, body, 'PUT');
+}
+
+// ---- Keywords ----
+
+export async function appleAdsKeywords(
+  creds: AppleAdsCredentials,
+  campaignId: string,
+  adGroupId: string,
+): Promise<AppleAdsKeyword[]> {
+  if (isEmulator()) {
+    seedMock();
+    return mockKeywords.get(adGroupId) ?? [];
+  }
+  const out: AppleAdsKeyword[] = [];
+  for (let offset = 0; offset < 5000; offset += 1000) {
+    const doc = await api<{
+      data?: Array<{ id?: number; text?: string; matchType?: string; status?: string; bidAmount?: { amount?: string; currency?: string } }>;
+      pagination?: { totalResults?: number };
+    }>(creds, `/campaigns/${campaignId}/adgroups/${adGroupId}/targetingkeywords?limit=1000&offset=${offset}`);
+    for (const k of doc.data ?? []) {
+      out.push({
+        id: String(k.id ?? ''),
+        adGroupId,
+        text: k.text ?? '',
+        matchType: k.matchType ?? 'BROAD',
+        status: k.status ?? 'ACTIVE',
+        bid: readMoney(k.bidAmount),
+      });
+    }
+    if ((doc.pagination?.totalResults ?? 0) <= offset + 1000) break;
+  }
+  return out;
+}
+
+export async function appleAdsCreateKeywords(
+  creds: AppleAdsCredentials,
+  campaignId: string,
+  adGroupId: string,
+  keywords: AppleAdsKeywordInput[],
+): Promise<AppleAdsKeyword[]> {
+  if (isEmulator()) {
+    seedMock();
+    const created = keywords.map((k) => ({
+      id: nextMockId(),
+      adGroupId,
+      text: k.text,
+      matchType: k.matchType,
+      status: 'ACTIVE',
+      bid: k.bid,
+    }));
+    mockKeywords.set(adGroupId, [...(mockKeywords.get(adGroupId) ?? []), ...created]);
+    return created;
+  }
+  const doc = await api<{ data?: Array<{ id?: number; text?: string; matchType?: string; status?: string; bidAmount?: { amount?: string; currency?: string } }> }>(
+    creds,
+    `/campaigns/${campaignId}/adgroups/${adGroupId}/targetingkeywords/bulk`,
+    keywords.map((k) => ({ text: k.text, matchType: k.matchType, bidAmount: money(k.bid.amount, k.bid.currency) })),
+  );
+  return (doc.data ?? []).map((k) => ({
+    id: String(k.id ?? ''),
+    adGroupId,
+    text: k.text ?? '',
+    matchType: k.matchType ?? 'BROAD',
+    status: k.status ?? 'ACTIVE',
+    bid: readMoney(k.bidAmount),
+  }));
+}
+
+export async function appleAdsUpdateKeyword(
+  creds: AppleAdsCredentials,
+  campaignId: string,
+  adGroupId: string,
+  keywordId: string,
+  patch: { status?: 'ACTIVE' | 'PAUSED'; bid?: { amount: number; currency: string } },
+): Promise<void> {
+  if (isEmulator()) {
+    seedMock();
+    const k = (mockKeywords.get(adGroupId) ?? []).find((x) => x.id === keywordId);
+    if (k) {
+      if (patch.status !== undefined) k.status = patch.status;
+      if (patch.bid !== undefined) k.bid = patch.bid;
+    }
+    return;
+  }
+  const entry: Record<string, unknown> = { id: keywordId };
+  if (patch.status !== undefined) entry.status = patch.status;
+  if (patch.bid !== undefined) entry.bidAmount = money(patch.bid.amount, patch.bid.currency);
+  await api(creds, `/campaigns/${campaignId}/adgroups/${adGroupId}/targetingkeywords/bulk`, [entry], 'PUT');
+}
+
+// ---- Negative keywords (ad-group scope) ----
+
+export async function appleAdsNegativeKeywords(
+  creds: AppleAdsCredentials,
+  campaignId: string,
+  adGroupId: string,
+): Promise<AppleAdsNegativeKeyword[]> {
+  if (isEmulator()) {
+    seedMock();
+    return mockNegatives.get(`g:${adGroupId}`) ?? mockNegatives.get(`c:${campaignId}`) ?? [];
+  }
+  const doc = await api<{ data?: Array<{ id?: number; text?: string; matchType?: string }> }>(
+    creds,
+    `/campaigns/${campaignId}/adgroups/${adGroupId}/negativekeywords?limit=1000`,
+  );
+  return (doc.data ?? []).map((n) => ({ id: String(n.id ?? ''), text: n.text ?? '', matchType: n.matchType ?? 'EXACT' }));
+}
+
+export async function appleAdsAddNegativeKeywords(
+  creds: AppleAdsCredentials,
+  campaignId: string,
+  adGroupId: string,
+  keywords: Array<{ text: string; matchType: 'EXACT' | 'BROAD' }>,
+): Promise<void> {
+  if (isEmulator()) {
+    seedMock();
+    const key = `g:${adGroupId}`;
+    const created = keywords.map((k) => ({ id: nextMockId(), text: k.text, matchType: k.matchType }));
+    mockNegatives.set(key, [...(mockNegatives.get(key) ?? []), ...created]);
+    return;
+  }
+  await api(creds, `/campaigns/${campaignId}/adgroups/${adGroupId}/negativekeywords/bulk`, keywords);
+}
+
+export async function appleAdsDeleteNegativeKeyword(
+  creds: AppleAdsCredentials,
+  campaignId: string,
+  adGroupId: string,
+  keywordId: string,
+): Promise<void> {
+  if (isEmulator()) {
+    seedMock();
+    const key = `g:${adGroupId}`;
+    mockNegatives.set(key, (mockNegatives.get(key) ?? []).filter((n) => n.id !== keywordId));
+    return;
+  }
+  await api(creds, `/campaigns/${campaignId}/adgroups/${adGroupId}/negativekeywords/delete/bulk`, [keywordId]);
+}
+
+// ---- Campaign create / update ----
+
+export async function appleAdsCreateCampaign(
+  creds: AppleAdsCredentials,
+  input: AppleAdsCampaignInput,
+): Promise<AppleAdsCampaign> {
+  if (isEmulator()) {
+    seedMock();
+    const campaign: AppleAdsCampaign = {
+      id: nextMockId(),
+      name: input.name,
+      status: 'ENABLED',
+      servingStatus: 'RUNNING',
+      dailyBudget: input.dailyBudgetAmount,
+      countries: input.countries,
+    };
+    mockExtraCampaigns.push(campaign);
+    return campaign;
+  }
+  const doc = await api<{ data?: { id?: number } }>(creds, '/campaigns', {
+    name: input.name,
+    adamId: input.adamId,
+    budgetAmount: money(input.budgetAmount.amount, input.budgetAmount.currency),
+    dailyBudgetAmount: money(input.dailyBudgetAmount.amount, input.dailyBudgetAmount.currency),
+    countriesOrRegions: input.countries,
+    supplySources: ['APPSTORE_SEARCH_RESULTS'],
+    billingEvent: 'TAPS',
+    adChannelType: 'SEARCH',
+  });
+  return { id: String(doc.data?.id ?? ''), name: input.name, status: 'ENABLED', dailyBudget: input.dailyBudgetAmount, countries: input.countries };
+}
+
+export async function appleAdsUpdateCampaign(
+  creds: AppleAdsCredentials,
+  campaignId: string,
+  patch: AppleAdsCampaignPatch,
+): Promise<void> {
+  if (isEmulator()) {
+    seedMock();
+    if (patch.status) mockStatuses.set(campaignId, patch.status);
+    const c = mockExtraCampaigns.find((x) => x.id === campaignId);
+    if (c) {
+      if (patch.name !== undefined) c.name = patch.name;
+      if (patch.status !== undefined) c.status = patch.status;
+      if (patch.dailyBudgetAmount !== undefined) c.dailyBudget = patch.dailyBudgetAmount;
+      if (patch.countries !== undefined) c.countries = patch.countries;
+    }
+    return;
+  }
+  const campaign: Record<string, unknown> = {};
+  if (patch.name !== undefined) campaign.name = patch.name;
+  if (patch.status !== undefined) campaign.status = patch.status;
+  if (patch.dailyBudgetAmount !== undefined) campaign.dailyBudgetAmount = money(patch.dailyBudgetAmount.amount, patch.dailyBudgetAmount.currency);
+  if (patch.countries !== undefined) campaign.countriesOrRegions = patch.countries;
+  await api(
+    creds,
+    `/campaigns/${campaignId}`,
+    { campaign, ...(patch.countries !== undefined ? { clearGeoTargetingOnCountryOrRegionChange: false } : {}) },
+    'PUT',
+  );
+}
+
+// ---- Entity reports (range totals) ----
+
+interface TotalRow {
+  metadata?: { adGroupId?: number; adGroupName?: string; keywordId?: number; keyword?: string; searchTermText?: string; matchType?: string };
+  total?: { localSpend?: { amount?: string; currency?: string }; taps?: number; impressions?: number; totalInstalls?: number; tapInstalls?: number; viewInstalls?: number };
+}
+function mapTotalRow(row: TotalRow, pick: (m: NonNullable<TotalRow['metadata']>) => { id: string; label: string }): AppleAdsMetrics {
+  const t = row.total ?? {};
+  const { id, label } = pick(row.metadata ?? {});
+  return {
+    id,
+    label,
+    spendAmount: Number(t.localSpend?.amount ?? 0) || 0,
+    spendCurrency: (t.localSpend?.currency ?? 'USD').trim() || 'USD',
+    taps: t.taps ?? 0,
+    impressions: t.impressions ?? 0,
+    installs: t.totalInstalls ?? (t.tapInstalls ?? 0) + (t.viewInstalls ?? 0),
+  };
+}
+async function totalsReport(
+  creds: AppleAdsCredentials,
+  path: string,
+  startDate: string,
+  endDate: string,
+  extraSelector: Record<string, unknown> = {},
+): Promise<TotalRow[]> {
+  const doc = await api<{ data?: { reportingDataResponse?: { row?: TotalRow[] } } }>(creds, path, {
+    startTime: startDate,
+    endTime: endDate,
+    granularity: 'DAILY',
+    timeZone: 'UTC',
+    returnRecordsWithNoMetrics: true,
+    returnRowTotals: true,
+    returnGrandTotals: false,
+    selector: { pagination: { offset: 0, limit: 1000 }, ...extraSelector },
+  });
+  return doc.data?.reportingDataResponse?.row ?? [];
+}
+
+export async function appleAdsAdGroupReport(
+  creds: AppleAdsCredentials,
+  campaignId: string,
+  startDate: string,
+  endDate: string,
+): Promise<AppleAdsMetrics[]> {
+  if (isEmulator()) {
+    seedMock();
+    return (mockAdGroups.get(campaignId) ?? []).map((g) => mockMetric(g.id, g.name));
+  }
+  const rows = await totalsReport(creds, `/campaigns/${campaignId}/adgroups/reports`, startDate, endDate);
+  return rows.map((r) => mapTotalRow(r, (m) => ({ id: String(m.adGroupId ?? ''), label: m.adGroupName ?? '' })));
+}
+
+export async function appleAdsKeywordReport(
+  creds: AppleAdsCredentials,
+  campaignId: string,
+  adGroupId: string,
+  startDate: string,
+  endDate: string,
+): Promise<AppleAdsMetrics[]> {
+  if (isEmulator()) {
+    seedMock();
+    return (mockKeywords.get(adGroupId) ?? []).map((k) => mockMetric(k.id, k.text));
+  }
+  const rows = await totalsReport(creds, `/campaigns/${campaignId}/adgroups/${adGroupId}/keywords/reports`, startDate, endDate);
+  return rows.map((r) => mapTotalRow(r, (m) => ({ id: String(m.keywordId ?? ''), label: m.keyword ?? '' })));
+}
+
+export async function appleAdsSearchTermsReport(
+  creds: AppleAdsCredentials,
+  campaignId: string,
+  adGroupId: string,
+  startDate: string,
+  endDate: string,
+): Promise<AppleAdsMetrics[]> {
+  if (isEmulator()) {
+    seedMock();
+    return ['vocabulary practice', 'ai text detector', 'grammar checker free', 'best essay app'].map((t, i) =>
+      mockMetric(`${adGroupId}-st${i}`, t),
+    );
+  }
+  const rows = await totalsReport(creds, `/campaigns/${campaignId}/adgroups/${adGroupId}/searchterms/reports`, startDate, endDate);
+  return rows.map((r) => mapTotalRow(r, (m) => ({ id: m.searchTermText ?? String(m.keywordId ?? ''), label: m.searchTermText ?? '(unknown)' })));
 }

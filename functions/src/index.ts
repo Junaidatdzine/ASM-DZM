@@ -72,9 +72,21 @@ export { reportDaily, reportSendNow } from './callable/report';
 export {
   admobConnect,
   adsAccountRemove,
+  adsAdGroupCreate,
+  adsAdGroupUpdate,
+  adsAdGroupsList,
   adsAppleConnect,
+  adsCampaignCreate,
   adsCampaignSetStatus,
+  adsCampaignUpdate,
   adsCampaignsList,
+  adsKeywordUpdate,
+  adsKeywordsCreate,
+  adsKeywordsList,
+  adsNegativeKeywordDelete,
+  adsNegativeKeywordsAdd,
+  adsNegativeKeywordsList,
+  adsSearchTermsList,
   adsSync,
 } from './callable/ads';
 export { analyticsOverview } from './callable/analytics';

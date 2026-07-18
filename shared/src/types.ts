@@ -504,6 +504,58 @@ export interface AdsConfigDoc {
   syncedAt?: TS;
 }
 
+// ---- Apple Search Ads management (live, not persisted) ----
+
+type Money = { amount: number; currency: string };
+
+/** One ad group in a campaign, with range-total metrics merged in. */
+export interface AdsAdGroupLive {
+  id: string;
+  campaignId: string;
+  accountId: string;
+  name: string;
+  status: string; // ENABLED | PAUSED
+  servingStatus?: string;
+  defaultBid: Money | null;
+  spendAmount: number;
+  spendCurrency: string;
+  taps: number;
+  impressions: number;
+  installs: number;
+}
+
+/** One targeting keyword in an ad group, with range-total metrics merged in. */
+export interface AdsKeywordLive {
+  id: string;
+  adGroupId: string;
+  text: string;
+  matchType: string; // EXACT | BROAD
+  status: string; // ACTIVE | PAUSED
+  bid: Money | null;
+  spendAmount: number;
+  spendCurrency: string;
+  taps: number;
+  impressions: number;
+  installs: number;
+}
+
+export interface AdsNegativeKeyword {
+  id: string;
+  text: string;
+  matchType: string;
+}
+
+/** A generic reporting row (e.g. a customer search term) with range totals. */
+export interface AdsMetricRow {
+  id: string;
+  label: string;
+  spendAmount: number;
+  spendCurrency: string;
+  taps: number;
+  impressions: number;
+  installs: number;
+}
+
 /** First-time download product types in Apple sales reports (updates/IAP excluded). */
 export function isDownloadProductType(productType: string): boolean {
   return /^(1|1F|1T|1E|1EP|1EU|F1)/.test(productType) && !/^7/.test(productType);

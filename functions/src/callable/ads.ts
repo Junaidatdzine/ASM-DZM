@@ -1,5 +1,15 @@
 import { z } from 'zod';
-import type { AdsAccountDayStat, AdsAccountDoc, AdsCampaignLive, AdsCampaignStat, AdsDayDoc } from '@asm/shared';
+import type {
+  AdsAccountDayStat,
+  AdsAccountDoc,
+  AdsAdGroupLive,
+  AdsCampaignLive,
+  AdsCampaignStat,
+  AdsDayDoc,
+  AdsKeywordLive,
+  AdsMetricRow,
+  AdsNegativeKeyword,
+} from '@asm/shared';
 import { isEmulator } from '../config';
 import { defineCallable } from '../lib/wrap';
 import { Timestamp, db, refs } from '../lib/firestore';
@@ -8,11 +18,26 @@ import { AppError, notFound } from '../lib/errors';
 import { decryptSecret, encryptSecret, type Encrypted } from '../lib/crypto';
 import { toUsd, usdRates } from '../lib/rates';
 import {
+  appleAdsAddNegativeKeywords,
+  appleAdsAdGroupReport,
+  appleAdsAdGroups,
   appleAdsCampaigns,
+  appleAdsCreateAdGroup,
+  appleAdsCreateCampaign,
+  appleAdsCreateKeywords,
   appleAdsDailyReport,
+  appleAdsDeleteNegativeKeyword,
+  appleAdsKeywordReport,
+  appleAdsKeywords,
+  appleAdsNegativeKeywords,
+  appleAdsSearchTermsReport,
   appleAdsSetCampaignStatus,
+  appleAdsUpdateAdGroup,
+  appleAdsUpdateCampaign,
+  appleAdsUpdateKeyword,
   appleAdsVerify,
   type AppleAdsCredentials,
+  type AppleAdsMetrics,
 } from '../lib/ads/appleAds';
 import { admobAccount, admobDailyEarnings, admobExchangeCode, type AdmobCredentials } from '../lib/ads/admob';
 
@@ -435,6 +460,240 @@ export const adsCampaignSetStatus = defineCallable(
     if (!account) throw notFound('Apple Search Ads account');
     await appleAdsSetCampaignStatus(account.creds, input.campaignId, input.status);
     return { ok: true, status: input.status };
+  },
+);
+
+// ---- Campaign / ad group / keyword management (Apple Search Ads) ----
+
+async function appleCreds(accountId: string): Promise<AppleAdsCredentials> {
+  const { apple } = await loadAccounts();
+  const account = apple.find((a) => a.id === accountId);
+  if (!account) throw notFound('Apple Search Ads account');
+  return account.creds;
+}
+/** Merge range-total report metrics onto live entities by id. */
+function withMetrics<T extends { id: string }>(items: T[], metrics: AppleAdsMetrics[]) {
+  const byId = new Map(metrics.map((m) => [m.id, m]));
+  return items.map((it) => {
+    const m = byId.get(it.id);
+    return {
+      ...it,
+      spendAmount: m?.spendAmount ?? 0,
+      spendCurrency: m?.spendCurrency ?? 'USD',
+      taps: m?.taps ?? 0,
+      impressions: m?.impressions ?? 0,
+      installs: m?.installs ?? 0,
+    };
+  });
+}
+const reportWindow = (days: number): [string, string] => [dateString(Math.max(1, days)), dateString(1)];
+const money = z.object({ amount: z.number().nonnegative(), currency: z.string().min(1) });
+const account = { accountId: z.string().min(1), campaignId: z.string().min(1) };
+
+export const adsAdGroupsList = defineCallable(
+  'adsAdGroupsList',
+  { input: z.object({ ...account, days: z.number().int().min(1).max(90).default(30) }), usesAscKey: true, timeoutSeconds: 120, authorize: (a) => requireAdmin(a) },
+  async (input) => {
+    const creds = await appleCreds(input.accountId);
+    const [groups, metrics] = await Promise.all([
+      appleAdsAdGroups(creds, input.campaignId),
+      appleAdsAdGroupReport(creds, input.campaignId, ...reportWindow(input.days ?? 30)).catch(() => []),
+    ]);
+    const adGroups: AdsAdGroupLive[] = withMetrics(groups.map((g) => ({ ...g, accountId: input.accountId })), metrics);
+    return { adGroups };
+  },
+);
+
+export const adsAdGroupCreate = defineCallable(
+  'adsAdGroupCreate',
+  {
+    input: z.object({ ...account, name: z.string().min(1).max(200), defaultBid: money }),
+    usesAscKey: true,
+    timeoutSeconds: 60,
+    authorize: (a) => requireAdmin(a),
+    audit: (input) => ({ action: 'ads.adgroup-create', detail: `${input.name} (${input.campaignId})` }),
+  },
+  async (input) => {
+    const creds = await appleCreds(input.accountId);
+    const group = await appleAdsCreateAdGroup(creds, input.campaignId, { name: input.name, defaultBid: input.defaultBid });
+    return { adGroup: { ...group, accountId: input.accountId } };
+  },
+);
+
+export const adsAdGroupUpdate = defineCallable(
+  'adsAdGroupUpdate',
+  {
+    input: z.object({ ...account, adGroupId: z.string().min(1), name: z.string().min(1).optional(), status: z.enum(['ENABLED', 'PAUSED']).optional(), defaultBid: money.optional() }),
+    usesAscKey: true,
+    timeoutSeconds: 60,
+    authorize: (a) => requireAdmin(a),
+    audit: (input) => ({ action: 'ads.adgroup-update', detail: `${input.adGroupId}${input.status ? ` → ${input.status}` : ''}` }),
+  },
+  async (input) => {
+    const creds = await appleCreds(input.accountId);
+    await appleAdsUpdateAdGroup(creds, input.campaignId, input.adGroupId, { name: input.name, status: input.status, defaultBid: input.defaultBid });
+    return { ok: true };
+  },
+);
+
+export const adsKeywordsList = defineCallable(
+  'adsKeywordsList',
+  { input: z.object({ ...account, adGroupId: z.string().min(1), days: z.number().int().min(1).max(90).default(30) }), usesAscKey: true, timeoutSeconds: 120, authorize: (a) => requireAdmin(a) },
+  async (input) => {
+    const creds = await appleCreds(input.accountId);
+    const [keywords, metrics] = await Promise.all([
+      appleAdsKeywords(creds, input.campaignId, input.adGroupId),
+      appleAdsKeywordReport(creds, input.campaignId, input.adGroupId, ...reportWindow(input.days ?? 30)).catch(() => []),
+    ]);
+    const rows: AdsKeywordLive[] = withMetrics(keywords, metrics);
+    return { keywords: rows };
+  },
+);
+
+export const adsKeywordsCreate = defineCallable(
+  'adsKeywordsCreate',
+  {
+    input: z.object({
+      ...account,
+      adGroupId: z.string().min(1),
+      keywords: z.array(z.object({ text: z.string().min(1).max(80), matchType: z.enum(['EXACT', 'BROAD']), bid: money })).min(1).max(500),
+    }),
+    usesAscKey: true,
+    timeoutSeconds: 120,
+    authorize: (a) => requireAdmin(a),
+    audit: (input) => ({ action: 'ads.keywords-create', detail: `${input.keywords.length} keyword(s) → ${input.adGroupId}` }),
+  },
+  async (input) => {
+    const creds = await appleCreds(input.accountId);
+    const created = await appleAdsCreateKeywords(creds, input.campaignId, input.adGroupId, input.keywords);
+    return { created: created.length };
+  },
+);
+
+export const adsKeywordUpdate = defineCallable(
+  'adsKeywordUpdate',
+  {
+    input: z.object({ ...account, adGroupId: z.string().min(1), keywordId: z.string().min(1), status: z.enum(['ACTIVE', 'PAUSED']).optional(), bid: money.optional() }),
+    usesAscKey: true,
+    timeoutSeconds: 60,
+    authorize: (a) => requireAdmin(a),
+    audit: (input) => ({ action: 'ads.keyword-update', detail: `${input.keywordId}${input.status ? ` → ${input.status}` : ''}${input.bid ? ` bid ${input.bid.amount}` : ''}` }),
+  },
+  async (input) => {
+    const creds = await appleCreds(input.accountId);
+    await appleAdsUpdateKeyword(creds, input.campaignId, input.adGroupId, input.keywordId, { status: input.status, bid: input.bid });
+    return { ok: true };
+  },
+);
+
+export const adsNegativeKeywordsList = defineCallable(
+  'adsNegativeKeywordsList',
+  { input: z.object({ ...account, adGroupId: z.string().min(1) }), usesAscKey: true, timeoutSeconds: 60, authorize: (a) => requireAdmin(a) },
+  async (input) => {
+    const creds = await appleCreds(input.accountId);
+    const negatives: AdsNegativeKeyword[] = await appleAdsNegativeKeywords(creds, input.campaignId, input.adGroupId);
+    return { negatives };
+  },
+);
+
+export const adsNegativeKeywordsAdd = defineCallable(
+  'adsNegativeKeywordsAdd',
+  {
+    input: z.object({ ...account, adGroupId: z.string().min(1), keywords: z.array(z.object({ text: z.string().min(1).max(80), matchType: z.enum(['EXACT', 'BROAD']) })).min(1).max(500) }),
+    usesAscKey: true,
+    timeoutSeconds: 60,
+    authorize: (a) => requireAdmin(a),
+    audit: (input) => ({ action: 'ads.negatives-add', detail: `${input.keywords.length} → ${input.adGroupId}` }),
+  },
+  async (input) => {
+    const creds = await appleCreds(input.accountId);
+    await appleAdsAddNegativeKeywords(creds, input.campaignId, input.adGroupId, input.keywords);
+    return { ok: true };
+  },
+);
+
+export const adsNegativeKeywordDelete = defineCallable(
+  'adsNegativeKeywordDelete',
+  {
+    input: z.object({ ...account, adGroupId: z.string().min(1), keywordId: z.string().min(1) }),
+    usesAscKey: true,
+    timeoutSeconds: 60,
+    authorize: (a) => requireAdmin(a),
+    audit: (input) => ({ action: 'ads.negative-delete', detail: input.keywordId }),
+  },
+  async (input) => {
+    const creds = await appleCreds(input.accountId);
+    await appleAdsDeleteNegativeKeyword(creds, input.campaignId, input.adGroupId, input.keywordId);
+    return { ok: true };
+  },
+);
+
+export const adsSearchTermsList = defineCallable(
+  'adsSearchTermsList',
+  { input: z.object({ ...account, adGroupId: z.string().min(1), days: z.number().int().min(1).max(90).default(30) }), usesAscKey: true, timeoutSeconds: 120, authorize: (a) => requireAdmin(a) },
+  async (input) => {
+    const creds = await appleCreds(input.accountId);
+    const terms: AdsMetricRow[] = await appleAdsSearchTermsReport(creds, input.campaignId, input.adGroupId, ...reportWindow(input.days ?? 30)).catch(() => []);
+    return { terms: terms.sort((a, b) => b.installs - a.installs || b.spendAmount - a.spendAmount) };
+  },
+);
+
+export const adsCampaignCreate = defineCallable(
+  'adsCampaignCreate',
+  {
+    input: z.object({
+      accountId: z.string().min(1),
+      name: z.string().min(1).max(200),
+      adamId: z.number().int().positive(),
+      currency: z.string().min(1),
+      budget: z.number().positive(),
+      dailyBudget: z.number().positive(),
+      countries: z.array(z.string().min(2).max(2)).min(1).max(175),
+    }),
+    usesAscKey: true,
+    timeoutSeconds: 120,
+    authorize: (a) => requireAdmin(a),
+    audit: (input) => ({ action: 'ads.campaign-create', detail: `${input.name} · ${input.countries.join(',')} · ${input.currency} ${input.dailyBudget}/day` }),
+  },
+  async (input) => {
+    const creds = await appleCreds(input.accountId);
+    const campaign = await appleAdsCreateCampaign(creds, {
+      name: input.name,
+      adamId: input.adamId,
+      budgetAmount: { amount: input.budget, currency: input.currency },
+      dailyBudgetAmount: { amount: input.dailyBudget, currency: input.currency },
+      countries: input.countries,
+    });
+    return { campaign: { ...campaign, accountId: input.accountId, accountLabel: '' } as AdsCampaignLive };
+  },
+);
+
+export const adsCampaignUpdate = defineCallable(
+  'adsCampaignUpdate',
+  {
+    input: z.object({
+      accountId: z.string().min(1),
+      campaignId: z.string().min(1),
+      name: z.string().min(1).optional(),
+      status: z.enum(['ENABLED', 'PAUSED']).optional(),
+      currency: z.string().min(1),
+      dailyBudget: z.number().positive().optional(),
+      countries: z.array(z.string().min(2).max(2)).min(1).optional(),
+    }),
+    usesAscKey: true,
+    timeoutSeconds: 60,
+    authorize: (a) => requireAdmin(a),
+    audit: (input) => ({ action: 'ads.campaign-update', detail: `${input.campaignId}${input.dailyBudget ? ` budget ${input.dailyBudget}` : ''}${input.status ? ` → ${input.status}` : ''}` }),
+  },
+  async (input) => {
+    const creds = await appleCreds(input.accountId);
+    await appleAdsUpdateCampaign(creds, input.campaignId, {
+      name: input.name,
+      status: input.status,
+      dailyBudgetAmount: input.dailyBudget !== undefined ? { amount: input.dailyBudget, currency: input.currency } : undefined,
+      countries: input.countries,
+    });
+    return { ok: true };
   },
 );
 
