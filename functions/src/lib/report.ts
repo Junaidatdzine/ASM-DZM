@@ -1,7 +1,8 @@
-import type { AdsDayDoc, FinanceDayDoc, StoreDoc, SubsDayDoc } from '@asm/shared';
+import { storeHex, type AdsDayDoc, type FinanceDayDoc, type StoreDoc, type SubsDayDoc } from '@asm/shared';
 import { isEmulator } from '../config';
 import { AppError } from './errors';
 import { Timestamp, db, refs } from './firestore';
+import { LOGO_PNG_DATA_URI } from './logo';
 
 /** Asia/Karachi is UTC+5 with no DST — a fixed offset is exact. */
 const PKT_OFFSET_MS = 5 * 3600 * 1000;
@@ -54,6 +55,23 @@ const storeLink = (appId: string) =>
     ? ` <a href="https://apps.apple.com/app/id${appId}" style="color:#1C75BC;font-weight:600;white-space:nowrap;text-decoration:none">View ↗</a>`
     : '';
 
+/** A store's colored dot, matching the dashboard glyph color. */
+const colorDot = (hex: string) =>
+  `<span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${hex};margin-right:7px;vertical-align:middle"></span>`;
+
+const regionNames = new Intl.DisplayNames(['en'], { type: 'region' });
+const countryName = (code: string) => {
+  if (!/^[A-Z]{2}$/.test(code)) return 'Other';
+  try {
+    return regionNames.of(code) ?? code;
+  } catch {
+    return code;
+  }
+};
+/** Flag emoji from an ISO country code (regional-indicator letters). */
+const flag = (code: string) =>
+  /^[A-Z]{2}$/.test(code) ? String.fromCodePoint(...[...code].map((c) => 127397 + c.charCodeAt(0))) : '🌐';
+
 interface Sales {
   proceedsUsd: number;
   downloads: number;
@@ -65,6 +83,7 @@ interface Subs {
 }
 interface StoreRow {
   name: string;
+  color: string;
   week: Sales;
   prior: Sales;
   month: Sales;
@@ -72,6 +91,7 @@ interface StoreRow {
 interface AppRow {
   name: string;
   store: string;
+  storeColor: string;
   appId: string;
   weekProceedsUsd: number;
   monthProceedsUsd: number;
@@ -114,6 +134,8 @@ export async function buildDailyReport(): Promise<DailyReport> {
   const subsWeek: Subs = { trialStarts: 0, newPaid: 0, cancellations: 0 };
   const subsPrior: Subs = { trialStarts: 0, newPaid: 0, cancellations: 0 };
   const subsMonth: Subs = { trialStarts: 0, newPaid: 0, cancellations: 0 };
+  const countryWeek: Record<string, number> = {};
+  const countryMonth: Record<string, number> = {};
   let haveSubs = false;
   let unmatchedMonthUsd = 0;
   let latestDate = '';
@@ -141,8 +163,10 @@ export async function buildDailyReport(): Promise<DailyReport> {
       // Ordered newest-first: [0..6] is this week, [7..13] the week before it.
       const days = daysSnap.docs.map((d) => d.data() as FinanceDayDoc);
       if (days[0]!.date > latestDate) latestDate = days[0]!.date;
+      const color = storeHex(store.data.color, store.id);
       storeRows.push({
         name: store.data.name,
+        color,
         week: aggregate(days.slice(0, WEEK_DAYS)),
         prior: aggregate(days.slice(WEEK_DAYS, WEEK_DAYS * 2)),
         month: aggregate(days),
@@ -153,6 +177,10 @@ export async function buildDailyReport(): Promise<DailyReport> {
       const appNames = new Map(appsSnap.docs.map((a) => [a.id, (a.data() as { name?: string }).name ?? a.id]));
       days.forEach((day, idx) => {
         const inWeek = idx < WEEK_DAYS;
+        for (const [c, usd] of Object.entries(day.perCountry ?? {})) {
+          countryMonth[c] = (countryMonth[c] ?? 0) + usd;
+          if (inWeek) countryWeek[c] = (countryWeek[c] ?? 0) + usd;
+        }
         for (const [appId, stat] of Object.entries(day.perApp ?? {})) {
           const proceeds = stat.proceedsUsd ?? 0;
           // Rows that don't resolve to a real app (e.g. subscription products like
@@ -166,6 +194,7 @@ export async function buildDailyReport(): Promise<DailyReport> {
           const row = appTotals.get(key) ?? {
             name: appNames.get(appId) ?? stat.name ?? appId,
             store: store.data.name,
+            storeColor: color,
             appId,
             weekProceedsUsd: 0,
             monthProceedsUsd: 0,
@@ -211,6 +240,11 @@ export async function buildDailyReport(): Promise<DailyReport> {
   const topApps = [...appTotals.values()]
     .sort((a, b) => b.monthProceedsUsd - a.monthProceedsUsd || b.weekProceedsUsd - a.weekProceedsUsd)
     .slice(0, 10);
+
+  const topCountries = Object.entries(countryMonth)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5)
+    .map(([code, monthUsd]) => ({ code, weekUsd: countryWeek[code] ?? 0, monthUsd }));
 
   // Advertising: Apple Ads spend + AdMob revenue (present only when connected).
   const adsSnap = await refs.adsDays().orderBy('date', 'desc').limit(MONTH_DAYS).get();
@@ -294,7 +328,7 @@ export async function buildDailyReport(): Promise<DailyReport> {
     .sort((a, b) => b.month.proceedsUsd - a.month.proceedsUsd)
     .map(
       (row) =>
-        `<tr>${tdName(row.name)}${td(money(row.week.proceedsUsd), true)}${td(money(row.month.proceedsUsd), true, true)}${td(count(row.month.downloads), true)}</tr>`,
+        `<tr>${tdName(`${colorDot(row.color)}${row.name}`)}${td(money(row.week.proceedsUsd), true)}${td(money(row.month.proceedsUsd), true, true)}${td(count(row.month.downloads), true)}</tr>`,
     )
     .join('');
   const storeTotalHtml = storeRows.length
@@ -303,7 +337,13 @@ export async function buildDailyReport(): Promise<DailyReport> {
   const appRowsHtml = topApps
     .map(
       (row, i) =>
-        `<tr>${tdName(`${i + 1}. ${row.name}${storeLink(row.appId)}`)}${td(row.store)}${td(money(row.weekProceedsUsd), true)}${td(money(row.monthProceedsUsd), true, true)}</tr>`,
+        `<tr>${tdName(`${i + 1}. ${row.name}${storeLink(row.appId)}`)}${td(`${colorDot(row.storeColor)}${row.store}`)}${td(money(row.weekProceedsUsd), true)}${td(money(row.monthProceedsUsd), true, true)}</tr>`,
+    )
+    .join('');
+  const countryRowsHtml = topCountries
+    .map(
+      (c) =>
+        `<tr>${tdName(`${flag(c.code)}&nbsp; ${countryName(c.code)}`)}${td(money(c.weekUsd), true)}${td(money(c.monthUsd), true, true)}</tr>`,
     )
     .join('');
 
@@ -322,8 +362,8 @@ export async function buildDailyReport(): Promise<DailyReport> {
   ${brandBar}
   <div class="pad" style="padding:22px 24px">
     <table role="presentation" width="100%" cellspacing="0" cellpadding="0"><tr>
-      <td style="vertical-align:middle;padding-right:11px;width:36px">
-        <div style="width:36px;height:36px;border-radius:10px;background:linear-gradient(135deg,#8DC63F 0%,#F7941D 20%,#EE1C25 40%,#EC008C 58%,#662D91 76%,#1C75BC 100%);text-align:center;line-height:36px;font-weight:800;font-size:18px;color:#ffffff">D</div>
+      <td style="vertical-align:middle;padding-right:11px;width:40px">
+        <img src="${LOGO_PNG_DATA_URI}" width="40" height="40" alt="Dzinemedia" style="display:block;width:40px;height:40px">
       </td>
       <td style="vertical-align:middle">
         <div style="font-size:17px;font-weight:800;color:#111827;letter-spacing:-.01em">Dzinemedia <span style="color:#1C75BC">ASM</span></div>
@@ -356,6 +396,14 @@ export async function buildDailyReport(): Promise<DailyReport> {
       ${appRowsHtml || `<tr>${tdName('No per-app data yet')}</tr>`}
     </table>
     ${unmatchedMonthUsd > 0.005 ? `<div style="font-size:11px;color:#9ca3af;margin-top:7px">Includes ${money(unmatchedMonthUsd)} of purchases still being matched to their apps (last 30 days) — the totals above are complete.</div>` : ''}
+
+    ${topCountries.length
+      ? sectionHead('Top paying countries', 'Where your earnings come from · ranked over 30 days') +
+        `<table role="presentation" class="tbl" width="100%" cellspacing="0" cellpadding="0">
+      <tr>${th('Country')}${th('Earnings · 7d', true)}${th('Earnings · 30d', true)}</tr>
+      ${countryRowsHtml}
+    </table>`
+      : ''}
 
     ${legend}
 

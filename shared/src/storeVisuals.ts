@@ -80,6 +80,24 @@ export const PALETTE_HUES: Record<string, number> = {
   violet: 258, teal: 173, orange: 25, pink: 330, lime: 84,
 };
 
+/** Concrete hex for each palette key = Tailwind's `-500` shade (the dashboard dot). */
+export const STORE_PALETTE_HEX: Record<string, string> = {
+  indigo: '#6366f1', emerald: '#10b981', amber: '#f59e0b', rose: '#f43f5e', sky: '#0ea5e9',
+  violet: '#8b5cf6', teal: '#14b8a6', orange: '#f97316', pink: '#ec4899', lime: '#84cc16',
+};
+
+/**
+ * Resolve any store color to a concrete hex — a `#rrggbb` value is used as-is,
+ * a palette key maps to its dashboard shade, and an unset color falls back to
+ * the same seed-derived default the dashboard uses. For non-CSS surfaces (the
+ * report email, exports) that can't use Tailwind classes.
+ */
+export function storeHex(color: string | undefined | null, seed = ''): string {
+  if (isHexColor(color)) return color;
+  if (color && STORE_PALETTE_HEX[color]) return STORE_PALETTE_HEX[color]!;
+  return STORE_PALETTE_HEX[defaultStoreColor(seed)]!;
+}
+
 export function hexToHue(hex: string): number {
   const r = parseInt(hex.slice(1, 3), 16) / 255;
   const g = parseInt(hex.slice(3, 5), 16) / 255;

@@ -16,16 +16,21 @@ const fx = vi.hoisted(() => {
     date: string,
     proceedsUsd: number,
     perApp: Record<string, { proceedsUsd: number; downloads: number; name: string }>,
+    perCountry: Record<string, number>,
   ) => ({
-    date, proceedsUsd, downloads: 5, units: 6, proceeds: {},
+    date, proceedsUsd, downloads: 5, units: 6, proceeds: {}, perCountry,
     perApp: Object.fromEntries(Object.entries(perApp).map(([id, a]) => [id, { ...a, units: 0, proceeds: {} }])),
     fetchedAt: null,
   });
-  const finDays = (proceedsUsd: number, perApp: Record<string, { proceedsUsd: number; downloads: number; name: string }>) => {
+  const finDays = (
+    proceedsUsd: number,
+    perApp: Record<string, { proceedsUsd: number; downloads: number; name: string }>,
+    perCountry: Record<string, number>,
+  ) => {
     const arr: { id: string; data: ReturnType<typeof financeDay> }[] = [];
     for (let dom = 30; dom >= 1; dom--) {
       const date = `2026-06-${String(dom).padStart(2, '0')}`;
-      arr.push({ id: date, data: financeDay(date, proceedsUsd, perApp) });
+      arr.push({ id: date, data: financeDay(date, proceedsUsd, perApp, perCountry) });
     }
     return arr; // newest-first
   };
@@ -42,8 +47,8 @@ const fx = vi.hoisted(() => {
     s1: finDays(10, {
       '6754688919': { proceedsUsd: 6, downloads: 3, name: 'AI Detector' },
       '6480001111': { proceedsUsd: 4, downloads: 2, name: 'PetFun AI' },
-    }),
-    s2: finDays(20, { '6754688919': { proceedsUsd: 20, downloads: 5, name: 'AI Detector' } }),
+    }, { US: 7, DE: 3 }),
+    s2: finDays(20, { '6754688919': { proceedsUsd: 20, downloads: 5, name: 'AI Detector' } }, { US: 15, GB: 5 }),
   };
   const subs: Record<string, ReturnType<typeof subDays>> = {
     s1: subDays(2, 1, 1),
@@ -58,7 +63,10 @@ const fx = vi.hoisted(() => {
     const date = `2026-06-${String(dom).padStart(2, '0')}`;
     adsDays.push({ id: date, data: { date, appleAds: { spend: {}, spendUsd: 2, taps: 0, impressions: 0, installs: 3, campaigns: [] }, admob: { earnings: {}, earningsUsd: 1 }, fetchedAt: null } });
   }
-  const stores = [{ id: 's1', data: { name: 'US Store' } }, { id: 's2', data: { name: 'DE Store' } }];
+  const stores = [
+    { id: 's1', data: { name: 'US Store', color: 'indigo' } },
+    { id: 's2', data: { name: 'DE Store', color: 'emerald' } },
+  ];
   return { finance, subs, apps, adsDays, stores };
 });
 
@@ -141,6 +149,30 @@ describe('buildDailyReport — simple, mobile-friendly report', () => {
     expect(r.html).toContain('$203.00'); // 210 + 7 admob - 14 spend
     expect(r.html).toContain('All stores');
     expect(r.html).toContain('How to read this.');
+  });
+
+  it('uses the real logo image (not a CSS letter)', async () => {
+    const r = await buildDailyReport();
+    expect(r.html).toContain('src="data:image/png;base64,');
+    expect(r.html).toContain('alt="Dzinemedia"');
+  });
+
+  it('colors each store dot to match the dashboard palette', async () => {
+    const r = await buildDailyReport();
+    expect(r.html).toContain('background:#6366f1'); // indigo-500 (US Store)
+    expect(r.html).toContain('background:#10b981'); // emerald-500 (DE Store)
+  });
+
+  it('adds a Top paying countries section with flags and per-window earnings', async () => {
+    const r = await buildDailyReport();
+    expect(r.html).toContain('Top paying countries');
+    expect(r.html).toContain('United States');
+    expect(r.html).toContain('🇺🇸');
+    // US 30-day = (7 + 15) × 30 = $660.00; 7-day = 22 × 7 = $154.00.
+    expect(r.html).toContain('$660.00');
+    expect(r.html).toContain('$154.00');
+    // Ranked US > GB > DE.
+    expect(r.html.indexOf('United States')).toBeLessThan(r.html.indexOf('United Kingdom'));
   });
 
   it('keeps a stable subject and summary for the audit trail', async () => {
