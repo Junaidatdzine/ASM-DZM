@@ -78,3 +78,26 @@ describe('Apple Search Ads management — mock consistency', () => {
     expect(metrics[0]!.spendAmount).toBeGreaterThanOrEqual(0);
   });
 });
+
+describe('rankFromResults (organic App Store rank)', () => {
+  it('finds the 1-based position of the app in search results', async () => {
+    const { rankFromResults } = await import('./lib/ads/itunesRank');
+    const doc = { resultCount: 3, results: [{ trackId: 111 }, { trackId: 6754688919 }, { trackId: 333 }] };
+    expect(rankFromResults(doc, 6754688919)).toEqual({ rank: 2, results: 3 });
+  });
+
+  it('returns null rank when the app is outside the results', async () => {
+    const { rankFromResults } = await import('./lib/ads/itunesRank');
+    expect(rankFromResults({ resultCount: 200, results: [{ trackId: 1 }] }, 42)).toEqual({ rank: null, results: 200 });
+    expect(rankFromResults({}, 42)).toEqual({ rank: null, results: 0 });
+  });
+
+  it('emulator mock returns deterministic ranks for every term', async () => {
+    const { fetchKeywordRanks } = await import('./lib/ads/itunesRank');
+    const a = await fetchKeywordRanks(['hp printer', 'scanner app'], 'US', 6754688919);
+    const b = await fetchKeywordRanks(['hp printer', 'scanner app'], 'US', 6754688919);
+    expect(a).toEqual(b);
+    expect(a).toHaveLength(2);
+    expect(a[0]).toHaveProperty('rank');
+  });
+});

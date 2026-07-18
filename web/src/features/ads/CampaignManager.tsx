@@ -21,6 +21,7 @@ export interface CampaignRef {
   status: string;
   displayStatus?: string;
   servingStateReasons?: string[];
+  adamId?: number;
   dailyBudget: { amount: number; currency: string } | null;
   countries: string[];
   accountLabel?: string;
@@ -119,11 +120,61 @@ function AdGroupDetail({ campaign, adGroup, days }: { campaign: CampaignRef; adG
 
   const keywords = keywordsQ.data?.keywords ?? [];
 
+  // Organic App Store rank per keyword (public search API), checked on demand.
+  const [rankCountry, setRankCountry] = useState(campaign.countries[0] ?? 'US');
+  const [ranks, setRanks] = useState<Record<string, { rank: number | null; results: number }>>({});
+  const rankCheck = useMutation({
+    mutationFn: () =>
+      api.adsKeywordRanks({
+        adamId: campaign.adamId!,
+        country: rankCountry,
+        terms: [...new Set(keywords.map((k) => k.text))].slice(0, 60),
+      }),
+    onSuccess: (res) => {
+      setRanks(Object.fromEntries(res.ranks.map((r) => [r.term, { rank: r.rank, results: r.results }])));
+      toast.success('App Store ranks checked', { description: `Top-200 search results · ${rankCountry}` });
+    },
+    onError: (e) => toast.error('Rank check failed', { description: callableMessage(e) }),
+  });
+  const rankCell = (term: string) => {
+    const r = ranks[term];
+    if (!r) return <span className="text-muted-foreground">—</span>;
+    if (r.rank === null) return <span className="text-muted-foreground" title={`Not in the top 200 of ${r.results} results`}>&gt;200</span>;
+    return (
+      <span
+        title={`Position ${r.rank} of ${r.results} apps · ${rankCountry}`}
+        className={cn('font-semibold tabular-nums', r.rank <= 3 ? 'text-success' : r.rank <= 10 ? '' : 'text-muted-foreground')}
+      >
+        #{r.rank}
+      </span>
+    );
+  };
+  const pct = (num: number, den: number) => (den > 0 ? `${((num / den) * 100).toFixed(1)}%` : '—');
+  const per = (amount: number, den: number, currency: string) => (den > 0 ? money(amount / den, currency) : '—');
+
   return (
     <div className="space-y-5 border-t bg-muted/20 p-4">
       {/* Keywords */}
       <div>
-        <h4 className="mb-2 text-[12px] font-semibold uppercase tracking-wide text-muted-foreground">Keywords</h4>
+        <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+          <h4 className="text-[12px] font-semibold uppercase tracking-wide text-muted-foreground">Keywords</h4>
+          {campaign.adamId && keywords.length > 0 && (
+            <div className="flex items-center gap-1.5">
+              {campaign.countries.length > 1 && campaign.countries.slice(0, 6).map((c) => (
+                <button
+                  key={c}
+                  onClick={() => setRankCountry(c)}
+                  className={cn('rounded-full border px-2 py-0.5 text-[11px] font-medium', rankCountry === c ? 'border-primary bg-primary/10 text-primary' : 'text-muted-foreground hover:bg-muted')}
+                >
+                  {c}
+                </button>
+              ))}
+              <Button size="sm" variant="outline" loading={rankCheck.isPending} onClick={() => rankCheck.mutate()}>
+                <Search className="size-3.5" /> Check App Store ranks
+              </Button>
+            </div>
+          )}
+        </div>
         <div className="overflow-x-auto rounded-lg border bg-card">
           {keywordsQ.isLoading ? (
             <div className="space-y-2 p-3">{[0, 1].map((i) => <Skeleton key={i} className="h-8" />)}</div>
@@ -138,14 +189,19 @@ function AdGroupDetail({ campaign, adGroup, days }: { campaign: CampaignRef; adG
                   <th className="px-3 py-2 font-medium">Status</th>
                   <th className="px-3 py-2 text-right font-medium">Bid</th>
                   <th className="px-3 py-2 text-right font-medium">Spend</th>
+                  <th className="px-3 py-2 text-right font-medium" title="How many times the ad was shown">Impr.</th>
+                  <th className="px-3 py-2 text-right font-medium">Taps</th>
+                  <th className="px-3 py-2 text-right font-medium" title="Taps ÷ impressions">TTR</th>
                   <th className="px-3 py-2 text-right font-medium">Installs</th>
+                  <th className="px-3 py-2 text-right font-medium" title="Spend ÷ installs">Cost/install</th>
+                  <th className="px-3 py-2 text-right font-medium" title="Organic App Store search position (top 200)">Rank</th>
                   <th className="px-3 py-2 text-right font-medium">Action</th>
                 </tr>
               </thead>
               <tbody>
                 {keywords.map((k: AdsKeywordLive) => (
                   <tr key={k.id} className="border-b last:border-0">
-                    <td className="max-w-[200px] truncate px-3 py-1.5 font-medium">{k.text}</td>
+                    <td className="max-w-[180px] truncate px-3 py-1.5 font-medium">{k.text}</td>
                     <td className="px-3 py-1.5"><Badge variant="outline">{k.matchType.toLowerCase()}</Badge></td>
                     <td className="px-3 py-1.5"><AdsStatusBadge entity={k} /></td>
                     <td className="px-3 py-1.5 text-right">
@@ -160,7 +216,12 @@ function AdGroupDetail({ campaign, adGroup, days }: { campaign: CampaignRef; adG
                       ) : '—'}
                     </td>
                     <td className="px-3 py-1.5 text-right tabular-nums">{money(k.spendAmount, k.spendCurrency)}</td>
+                    <td className="px-3 py-1.5 text-right tabular-nums">{cnt(k.impressions)}</td>
+                    <td className="px-3 py-1.5 text-right tabular-nums">{cnt(k.taps)}</td>
+                    <td className="px-3 py-1.5 text-right tabular-nums">{pct(k.taps, k.impressions)}</td>
                     <td className="px-3 py-1.5 text-right tabular-nums">{cnt(k.installs)}</td>
+                    <td className="px-3 py-1.5 text-right tabular-nums">{per(k.spendAmount, k.installs, k.spendCurrency)}</td>
+                    <td className="px-3 py-1.5 text-right">{rankCell(k.text)}</td>
                     <td className="px-3 py-1.5 text-right">
                       <Button
                         size="iconSm"

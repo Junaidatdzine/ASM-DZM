@@ -399,6 +399,10 @@ export const api = {
     Ok
   >('adsAdGroupUpdate'),
   adsKeywordsList: call<{ accountId: string; campaignId: string; adGroupId: string; days?: number }, { keywords: AdsKeywordLive[] }>('adsKeywordsList', 130_000),
+  adsKeywordRanks: call<
+    { adamId: number; country: string; terms: string[] },
+    { ranks: Array<{ term: string; rank: number | null; results: number }>; checkedAt: number }
+  >('adsKeywordRanks', 130_000),
   adsKeywordsCreate: call<
     { accountId: string; campaignId: string; adGroupId: string; keywords: Array<{ text: string; matchType: 'EXACT' | 'BROAD'; bid: Money }> },
     { created: number }

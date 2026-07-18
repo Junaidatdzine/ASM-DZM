@@ -206,6 +206,7 @@ export function AdsPage() {
           status: 'UNKNOWN',
           displayStatus: undefined,
           servingStateReasons: [],
+          adamId: undefined,
           dailyBudget: null,
           countries: [],
           spend: m.spend,
@@ -477,7 +478,7 @@ export function AdsPage() {
                             <Button
                               variant="outline"
                               size="sm"
-                              onClick={() => setManageTarget({ accountId: c.accountId, id: c.id, name: c.name, status: c.status, displayStatus: c.displayStatus, servingStateReasons: c.servingStateReasons, dailyBudget: c.dailyBudget ?? null, countries: c.countries ?? [], accountLabel: c.accountLabel })}
+                              onClick={() => setManageTarget({ accountId: c.accountId, id: c.id, name: c.name, status: c.status, displayStatus: c.displayStatus, servingStateReasons: c.servingStateReasons, adamId: c.adamId, dailyBudget: c.dailyBudget ?? null, countries: c.countries ?? [], accountLabel: c.accountLabel })}
                             >
                               <Settings2 className="size-3.5" /> Manage
                             </Button>

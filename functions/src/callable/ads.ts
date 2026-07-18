@@ -43,6 +43,7 @@ import {
   type AppleAdsMetrics,
 } from '../lib/ads/appleAds';
 import { admobAccount, admobDailyEarnings, admobExchangeCode, type AdmobCredentials } from '../lib/ads/admob';
+import { fetchKeywordRanks } from '../lib/ads/itunesRank';
 
 const ADS_SCHEMA_VERSION = 2;
 const round2 = (n: number) => Math.round(n * 100) / 100;
@@ -686,6 +687,28 @@ export const adsSearchTermsList = defineCallable(
     const creds = await appleCreds(input.accountId);
     const terms: AdsMetricRow[] = await appleAdsSearchTermsReport(creds, input.campaignId, input.adGroupId, ...reportWindow(input.days ?? 30)).catch(() => []);
     return { terms: terms.sort((a, b) => b.installs - a.installs || b.spendAmount - a.spendAmount) };
+  },
+);
+
+/**
+ * Organic App Store rank for each keyword in a storefront (public iTunes
+ * Search API — top 200). Answers "where does my app actually show when a
+ * customer searches this?", next to what the ad is paying for it.
+ */
+export const adsKeywordRanks = defineCallable(
+  'adsKeywordRanks',
+  {
+    input: z.object({
+      adamId: z.number().int().positive(),
+      country: z.string().length(2),
+      terms: z.array(z.string().trim().min(1).max(80)).min(1).max(60),
+    }),
+    timeoutSeconds: 120,
+    authorize: (a) => requireAdmin(a),
+  },
+  async (input) => {
+    const ranks = await fetchKeywordRanks(input.terms, input.country, input.adamId);
+    return { ranks, checkedAt: Date.now() };
   },
 );
 

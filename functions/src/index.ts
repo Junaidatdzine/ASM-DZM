@@ -82,6 +82,7 @@ export {
   adsCampaignSetup,
   adsCampaignUpdate,
   adsCampaignsList,
+  adsKeywordRanks,
   adsKeywordUpdate,
   adsKeywordsCreate,
   adsKeywordsList,
