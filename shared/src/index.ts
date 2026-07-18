@@ -9,4 +9,5 @@ export * from './appReview';
 export * from './screenshotSpecs';
 export * from './storeVisuals';
 export * from './adsStatus';
+export * from './adsCountries';
 export * from './appName';

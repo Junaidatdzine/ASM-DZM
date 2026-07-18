@@ -5,6 +5,7 @@ import type {
   AdsKeywordLive,
   AdsMetricRow,
   AdsNegativeKeyword,
+  AdsPromotableApp,
   AgeRatingValues,
   AiGrant,
   BuildRef,
@@ -413,6 +414,7 @@ export const api = {
   >('adsNegativeKeywordsAdd'),
   adsNegativeKeywordDelete: call<{ accountId: string; campaignId: string; adGroupId: string; keywordId: string }, Ok>('adsNegativeKeywordDelete'),
   adsSearchTermsList: call<{ accountId: string; campaignId: string; adGroupId: string; days?: number }, { terms: AdsMetricRow[] }>('adsSearchTermsList', 130_000),
+  adsCampaignSetup: call<{ accountId: string }, { apps: AdsPromotableApp[]; currency: string | null; adsListChecked: boolean }>('adsCampaignSetup', 70_000),
   adsCampaignCreate: call<
     { accountId: string; name: string; adamId: number; currency: string; budget: number; dailyBudget: number; countries: string[] },
     { campaign: AdsCampaignLive }

@@ -2,7 +2,8 @@ import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { AlertTriangle, ChevronRight, Pause, Play, Plus, Search, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
-import { resolveAdsStatus, type AdsAdGroupLive, type AdsKeywordLive } from '@asm/shared';
+import { ADS_REGIONS, ADS_TOP_MARKETS, resolveAdsStatus, type AdsAdGroupLive, type AdsKeywordLive } from '@asm/shared';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/Select';
 import { api, callableMessage } from '@/lib/callables';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
@@ -379,74 +380,199 @@ export function CampaignManagerDialog({ open, onOpenChange, campaign, days }: { 
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Create campaign dialog
+// Create campaign dialog — app picker + country quick-select, driven by the
+// account's own app list from the Apple Ads API.
 // ─────────────────────────────────────────────────────────────────────────────
-export function CreateCampaignDialog({ open, onOpenChange, accounts }: { open: boolean; onOpenChange: (o: boolean) => void; accounts: Array<{ id: string; label: string }> }) {
+
+const regionName = new Intl.DisplayNames(['en'], { type: 'region' });
+const countryLabel = (code: string) => {
+  try {
+    return regionName.of(code) ?? code;
+  } catch {
+    return code;
+  }
+};
+const countryFlag = (code: string) =>
+  /^[A-Z]{2}$/.test(code) ? String.fromCodePoint(...[...code].map((c) => 127397 + c.charCodeAt(0))) : '';
+
+/** Multi-select country picker: quick region buttons + searchable checklist + chips. */
+function CountryPicker({ selected, onChange, eligible }: { selected: string[]; onChange: (codes: string[]) => void; eligible?: string[] }) {
+  const [query, setQuery] = useState('');
+  const has = (c: string) => selected.includes(c);
+  const toggle = (c: string) => onChange(has(c) ? selected.filter((x) => x !== c) : [...selected, c]);
+  const addAll = (codes: string[]) => onChange([...new Set([...selected, ...codes.filter((c) => !eligible || eligible.includes(c))])]);
+  const pool = eligible?.length ? ADS_REGIONS.map((r) => ({ ...r, codes: r.codes.filter((c) => eligible.includes(c)) })).filter((r) => r.codes.length) : ADS_REGIONS;
+  const q = query.trim().toLowerCase();
+
+  return (
+    <div className="rounded-lg border bg-card">
+      {/* Selected chips */}
+      <div className="flex flex-wrap items-center gap-1.5 border-b p-2">
+        {selected.length === 0 && <span className="px-1 text-[12px] text-muted-foreground">No countries selected yet</span>}
+        {selected.map((c) => (
+          <span key={c} className="inline-flex items-center gap-1 rounded-full border bg-muted/40 px-2 py-0.5 text-[12px]">
+            {countryFlag(c)} {countryLabel(c)}
+            <button onClick={() => toggle(c)} aria-label={`Remove ${countryLabel(c)}`} className="text-muted-foreground hover:text-destructive">×</button>
+          </span>
+        ))}
+        {selected.length > 1 && (
+          <button onClick={() => onChange([])} className="ml-auto px-1 text-[11px] text-muted-foreground hover:text-destructive">Clear all</button>
+        )}
+      </div>
+      {/* Quick region buttons */}
+      <div className="flex flex-wrap gap-1.5 border-b p-2">
+        <button onClick={() => addAll(ADS_TOP_MARKETS)} className="rounded-full border border-primary/40 bg-primary/5 px-2.5 py-0.5 text-[11px] font-medium text-primary hover:bg-primary/10">★ Top markets</button>
+        {pool.map((r) => (
+          <button key={r.key} onClick={() => addAll(r.codes)} className="rounded-full border px-2.5 py-0.5 text-[11px] font-medium text-muted-foreground hover:bg-muted">+ {r.label}</button>
+        ))}
+      </div>
+      {/* Search + checklist */}
+      <div className="p-2">
+        <Input value={query} placeholder="Search countries…" onChange={(e) => setQuery(e.target.value)} className="mb-2 h-8" />
+        <div className="grid max-h-44 grid-cols-2 gap-x-3 overflow-y-auto sm:grid-cols-3">
+          {pool.flatMap((r) => r.codes)
+            .filter((c) => !q || countryLabel(c).toLowerCase().includes(q) || c.toLowerCase().includes(q))
+            .map((c) => (
+              <label key={c} className="flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 text-[12px] hover:bg-muted/60">
+                <input type="checkbox" checked={has(c)} onChange={() => toggle(c)} className="size-3.5 accent-[var(--primary,#1C75BC)]" />
+                <span className="truncate">{countryFlag(c)} {countryLabel(c)}</span>
+              </label>
+            ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export function CreateCampaignDialog({ open, onOpenChange, accounts, campaigns = [] }: { open: boolean; onOpenChange: (o: boolean) => void; accounts: Array<{ id: string; label: string }>; campaigns?: Array<{ accountId: string; name: string; adamId?: number }> }) {
   const qc = useQueryClient();
-  const [form, setForm] = useState({ accountId: '', name: '', adamId: '', currency: 'USD', budget: '', dailyBudget: '', countries: 'US' });
+  const [accountId, setAccountId] = useState('');
+  const [name, setName] = useState('');
+  const [appChoice, setAppChoice] = useState(''); // adamId string, or 'manual'
+  const [manualId, setManualId] = useState('');
+  const [countries, setCountries] = useState<string[]>(['US']);
+  const [budget, setBudget] = useState('');
+  const [dailyBudget, setDailyBudget] = useState('');
+
+  const activeAccount = accountId || accounts[0]?.id || '';
+  // The account's promotable apps + workspace apps + billing currency, from the Ads API.
+  const setupQ = useQuery({
+    queryKey: ['adsCampaignSetup', activeAccount],
+    queryFn: () => api.adsCampaignSetup({ accountId: activeAccount }),
+    enabled: open && !!activeAccount,
+    staleTime: 300_000,
+  });
+  const apps = setupQ.data?.apps ?? [];
+  const currency = setupQ.data?.currency ?? 'USD';
+  const selectedApp = apps.find((a) => String(a.adamId) === appChoice);
+  const adamId = appChoice === 'manual' ? Number(manualId) : Number(appChoice) || 0;
+  // "This app already advertises here" guard — checked against live campaigns.
+  const existing = campaigns.filter((c) => c.accountId === activeAccount && c.adamId && c.adamId === adamId);
+
   const create = useMutation({
     mutationFn: () =>
       api.adsCampaignCreate({
-        accountId: form.accountId || accounts[0]?.id || '',
-        name: form.name.trim(),
-        adamId: Number(form.adamId),
-        currency: form.currency.trim().toUpperCase() || 'USD',
-        budget: Number(form.budget),
-        dailyBudget: Number(form.dailyBudget),
-        countries: form.countries.split(',').map((c) => c.trim().toUpperCase()).filter((c) => c.length === 2),
+        accountId: activeAccount,
+        name: name.trim() || `${selectedApp?.name ?? 'App'} — ${countries.slice(0, 3).join(', ')}${countries.length > 3 ? '…' : ''}`,
+        adamId,
+        currency,
+        budget: Number(budget),
+        dailyBudget: Number(dailyBudget),
+        countries,
       }),
     onSuccess: () => {
-      toast.success('Campaign created', { description: 'It starts paused-safe — review ad groups & keywords before it spends.' });
+      toast.success('Campaign created', { description: 'Add ad groups & keywords, then review before it spends.' });
       onOpenChange(false);
-      setForm({ accountId: '', name: '', adamId: '', currency: 'USD', budget: '', dailyBudget: '', countries: 'US' });
+      setName(''); setAppChoice(''); setManualId(''); setCountries(['US']); setBudget(''); setDailyBudget('');
       qc.invalidateQueries({ queryKey: ['adsCampaigns'] });
     },
     onError: (e) => toast.error('Couldn’t create campaign', { description: callableMessage(e) }),
   });
 
-  const countries = form.countries.split(',').map((c) => c.trim().toUpperCase()).filter((c) => c.length === 2);
-  const ready = form.name.trim() && Number(form.adamId) > 0 && Number(form.budget) > 0 && Number(form.dailyBudget) > 0 && countries.length > 0 && (form.accountId || accounts.length > 0);
+  const ready = adamId > 0 && Number(budget) > 0 && Number(dailyBudget) > 0 && countries.length > 0 && !!activeAccount;
 
   return (
     <Dialog open={open} onOpenChange={(o) => { if (!create.isPending) onOpenChange(o); }}>
-      <DialogContent wide className="max-h-[85vh] overflow-y-auto">
+      <DialogContent wide className="max-h-[88vh] overflow-y-auto">
         <DialogHeader title="New Search Ads campaign" description="Creates the campaign in Apple Search Ads. Add ad groups and keywords next, then it starts serving." />
         {accounts.length > 1 && (
           <div className="mb-3">
             <Label>Account</Label>
             <div className="flex flex-wrap gap-1.5">
               {accounts.map((a) => (
-                <button key={a.id} onClick={() => setForm((f) => ({ ...f, accountId: a.id }))} className={cn('rounded-full border px-2.5 py-1 text-[12px] font-medium', (form.accountId || accounts[0]?.id) === a.id ? 'border-primary bg-primary/10 text-primary' : 'text-muted-foreground hover:bg-muted')}>{a.label}</button>
+                <button key={a.id} onClick={() => { setAccountId(a.id); setAppChoice(''); }} className={cn('rounded-full border px-2.5 py-1 text-[12px] font-medium', activeAccount === a.id ? 'border-primary bg-primary/10 text-primary' : 'text-muted-foreground hover:bg-muted')}>{a.label}</button>
               ))}
             </div>
           </div>
         )}
+
         <div className="grid gap-3 sm:grid-cols-2">
           <div className="sm:col-span-2">
+            <Label>App to promote</Label>
+            <Select value={appChoice} onValueChange={setAppChoice}>
+              <SelectTrigger>
+                <SelectValue placeholder={setupQ.isLoading ? 'Loading your apps…' : 'Choose an app'} />
+              </SelectTrigger>
+              <SelectContent>
+                {apps.filter((a) => a.inAdsAccount).length > 0 && (
+                  <>
+                    <div className="px-2.5 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">In this ads account</div>
+                    {apps.filter((a) => a.inAdsAccount).map((a) => (
+                      <SelectItem key={a.adamId} value={String(a.adamId)}>{a.name}{a.store ? ` · ${a.store}` : ''}</SelectItem>
+                    ))}
+                  </>
+                )}
+                {apps.filter((a) => !a.inAdsAccount).length > 0 && (
+                  <>
+                    <div className="px-2.5 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">From your stores</div>
+                    {apps.filter((a) => !a.inAdsAccount).map((a) => (
+                      <SelectItem key={a.adamId} value={String(a.adamId)}>{a.name}{a.store ? ` · ${a.store}` : ''}</SelectItem>
+                    ))}
+                  </>
+                )}
+                <div className="mt-1 border-t pt-1">
+                  <SelectItem value="manual">Enter an App Store ID manually…</SelectItem>
+                </div>
+              </SelectContent>
+            </Select>
+            {setupQ.data && !setupQ.data.adsListChecked && (
+              <FieldHint>Couldn’t reach the ads account’s app list — showing your store apps; Apple will verify on create.</FieldHint>
+            )}
+            {selectedApp && !selectedApp.inAdsAccount && setupQ.data?.adsListChecked && (
+              <FieldHint>This app isn’t in the ads account’s app list yet — Apple may reject it if it belongs to a different developer account.</FieldHint>
+            )}
+            {existing.length > 0 && (
+              <div className="mt-1.5 flex items-start gap-1.5 rounded-lg border border-warning/40 bg-warning/10 px-2.5 py-2 text-[12px]">
+                <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+                <span>This app already has {existing.length === 1 ? 'a campaign' : `${existing.length} campaigns`} here ({existing.map((c) => c.name).join(', ')}) — creating another can make them compete on the same keywords.</span>
+              </div>
+            )}
+          </div>
+          {appChoice === 'manual' && (
+            <div className="sm:col-span-2">
+              <Label htmlFor="c-adam">App Store ID</Label>
+              <Input id="c-adam" value={manualId} placeholder="6754688919" onChange={(e) => setManualId(e.target.value.replace(/[^0-9]/g, ''))} />
+              <FieldHint>The numeric id from the app’s App Store listing URL.</FieldHint>
+            </div>
+          )}
+          <div className="sm:col-span-2">
             <Label htmlFor="c-name">Campaign name</Label>
-            <Input id="c-name" value={form.name} placeholder="e.g. AI Detector — US Search" onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} />
+            <Input id="c-name" value={name} placeholder={selectedApp ? `${selectedApp.name} — ${countries.slice(0, 3).join(', ')}` : 'e.g. AI Detector — US Search'} onChange={(e) => setName(e.target.value)} />
+            <FieldHint>Left empty, it’s named after the app and countries.</FieldHint>
+          </div>
+          <div className="sm:col-span-2">
+            <Label>Countries</Label>
+            <CountryPicker selected={countries} onChange={setCountries} eligible={selectedApp?.countries} />
+            {selectedApp?.countries && <FieldHint>Only showing countries where “{selectedApp.name}” can serve ads.</FieldHint>}
           </div>
           <div>
-            <Label htmlFor="c-adam">App (Apple ID)</Label>
-            <Input id="c-adam" value={form.adamId} placeholder="6754688919" onChange={(e) => setForm((f) => ({ ...f, adamId: e.target.value.replace(/[^0-9]/g, '') }))} />
-            <FieldHint>The app’s numeric App Store ID (from its listing URL).</FieldHint>
+            <Label htmlFor="c-daily">Daily budget ({currency})</Label>
+            <Input id="c-daily" value={dailyBudget} placeholder="25" onChange={(e) => setDailyBudget(e.target.value.replace(/[^0-9.]/g, ''))} />
+            <FieldHint>Billing currency comes from the ads account.</FieldHint>
           </div>
           <div>
-            <Label htmlFor="c-countries">Countries</Label>
-            <Input id="c-countries" value={form.countries} placeholder="US, GB, DE" onChange={(e) => setForm((f) => ({ ...f, countries: e.target.value }))} />
-            <FieldHint>2-letter codes, comma separated.</FieldHint>
-          </div>
-          <div>
-            <Label htmlFor="c-currency">Currency</Label>
-            <Input id="c-currency" value={form.currency} onChange={(e) => setForm((f) => ({ ...f, currency: e.target.value.toUpperCase().slice(0, 3) }))} />
-          </div>
-          <div>
-            <Label htmlFor="c-daily">Daily budget</Label>
-            <Input id="c-daily" value={form.dailyBudget} placeholder="25" onChange={(e) => setForm((f) => ({ ...f, dailyBudget: e.target.value.replace(/[^0-9.]/g, '') }))} />
-          </div>
-          <div>
-            <Label htmlFor="c-budget">Total budget</Label>
-            <Input id="c-budget" value={form.budget} placeholder="500" onChange={(e) => setForm((f) => ({ ...f, budget: e.target.value.replace(/[^0-9.]/g, '') }))} />
+            <Label htmlFor="c-budget">Total budget ({currency})</Label>
+            <Input id="c-budget" value={budget} placeholder="500" onChange={(e) => setBudget(e.target.value.replace(/[^0-9.]/g, ''))} />
             <FieldHint>Lifetime cap for the campaign.</FieldHint>
           </div>
         </div>

@@ -7,6 +7,8 @@ import {
   appleAdsCreateCampaign,
   appleAdsCreateKeywords,
   appleAdsKeywords,
+  appleAdsOrgCurrency,
+  appleAdsOwnedApps,
   appleAdsUpdateKeyword,
   type AppleAdsCredentials,
 } from './lib/ads/appleAds';
@@ -54,6 +56,19 @@ describe('Apple Search Ads management — mock consistency', () => {
     });
     const list = await appleAdsCampaigns(creds);
     expect(list.some((x) => x.id === c.id && x.name === 'Brand New Campaign')).toBe(true);
+  });
+
+  it('lists the account’s promotable apps with eligible countries, and its currency', async () => {
+    const apps = await appleAdsOwnedApps(creds);
+    expect(apps.length).toBeGreaterThan(0);
+    expect(apps[0]).toMatchObject({ adamId: expect.any(Number), name: expect.any(String) });
+    expect(apps[0]!.countries).toContain('US');
+    expect(await appleAdsOrgCurrency(creds)).toBe('USD');
+  });
+
+  it('campaigns carry the promoted app id for duplicate checks', async () => {
+    const list = await appleAdsCampaigns(creds);
+    expect(list.find((c) => c.id === 'mock-c1')?.adamId).toBe(6754688919);
   });
 
   it('ad-group report returns a metric row per ad group', async () => {

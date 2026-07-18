@@ -477,6 +477,7 @@ export function AdsPage() {
         open={createCampaignOpen}
         onOpenChange={setCreateCampaignOpen}
         accounts={appleAccounts.filter((a) => a.connected).map((a) => ({ id: a.id, label: a.label }))}
+        campaigns={liveCampaigns}
       />
       <ConfirmDialog
         open={!!removeTarget}

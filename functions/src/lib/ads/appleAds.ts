@@ -122,6 +122,8 @@ export interface AppleAdsCampaign {
   displayStatus?: string;
   /** Raw serving-state reasons (e.g. CREDIT_CARD_DECLINED). */
   servingStateReasons?: string[];
+  /** The promoted app's App Store id. */
+  adamId?: number;
   dailyBudget: { amount: number; currency: string } | null;
   countries: string[];
 }
@@ -137,6 +139,7 @@ function mockCampaigns(): AppleAdsCampaign[] {
       status: mockStatuses.get('mock-c1') ?? 'ENABLED',
       servingStatus: 'RUNNING',
       displayStatus: 'RUNNING',
+      adamId: 6754688919,
       dailyBudget: { amount: 40, currency: 'USD' },
       countries: ['US'],
     },
@@ -182,6 +185,7 @@ export async function appleAdsCampaigns(creds: AppleAdsCredentials): Promise<App
         servingStatus?: string;
         displayStatus?: string;
         servingStateReasons?: string[];
+        adamId?: number;
         dailyBudgetAmount?: { amount?: string; currency?: string } | null;
         countriesOrRegions?: string[];
       }>;
@@ -195,6 +199,7 @@ export async function appleAdsCampaigns(creds: AppleAdsCredentials): Promise<App
         servingStatus: c.servingStatus,
         displayStatus: c.displayStatus,
         servingStateReasons: c.servingStateReasons ?? [],
+        adamId: c.adamId,
         dailyBudget: c.dailyBudgetAmount?.amount
           ? { amount: Number(c.dailyBudgetAmount.amount) || 0, currency: c.dailyBudgetAmount.currency ?? 'USD' }
           : null,
@@ -769,6 +774,45 @@ export async function appleAdsKeywordReport(
   }
   const rows = await totalsReport(creds, `/campaigns/${campaignId}/adgroups/${adGroupId}/keywords/reports`, startDate, endDate);
   return rows.map((r) => mapTotalRow(r, (m) => ({ id: String(m.keywordId ?? ''), label: m.keyword ?? '' })));
+}
+
+// ---- Account app catalog + org currency (create-campaign helpers) ----
+
+export interface AppleAdsPromotableApp {
+  adamId: number;
+  name: string;
+  developer?: string;
+  /** Storefronts the app can be promoted in, when Apple returns them. */
+  countries?: string[];
+}
+
+/** Apps this Apple Ads account can promote (the org's own apps). */
+export async function appleAdsOwnedApps(creds: AppleAdsCredentials): Promise<AppleAdsPromotableApp[]> {
+  if (isEmulator()) {
+    return [
+      { adamId: 6754688919, name: 'AI Detector — Humanize Text', developer: 'Demo Co', countries: ['US', 'GB', 'DE', 'FR'] },
+      { adamId: 6480554417, name: 'PetFun AI', developer: 'Demo Co', countries: ['US', 'CA'] },
+    ];
+  }
+  const doc = await api<{
+    data?: Array<{ adamId?: number; appName?: string; developerName?: string; countryOrRegionCodes?: string[] }>;
+  }>(creds, '/search/apps?returnOwnedApps=true&limit=500');
+  return (doc.data ?? [])
+    .filter((a) => a.adamId)
+    .map((a) => ({
+      adamId: a.adamId!,
+      name: a.appName ?? String(a.adamId),
+      developer: a.developerName,
+      countries: a.countryOrRegionCodes,
+    }));
+}
+
+/** The org's billing currency — campaign budgets must be in it. */
+export async function appleAdsOrgCurrency(creds: AppleAdsCredentials): Promise<string | null> {
+  if (isEmulator()) return 'USD';
+  const doc = await api<{ data?: Array<{ orgId?: number; currency?: string }> }>(creds, '/acls');
+  const org = (doc.data ?? []).find((o) => o.orgId === creds.orgId) ?? (doc.data ?? [])[0];
+  return org?.currency ?? null;
 }
 
 export async function appleAdsSearchTermsReport(

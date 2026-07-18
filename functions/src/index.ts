@@ -79,6 +79,7 @@ export {
   adsAppleConnect,
   adsCampaignCreate,
   adsCampaignSetStatus,
+  adsCampaignSetup,
   adsCampaignUpdate,
   adsCampaignsList,
   adsKeywordUpdate,

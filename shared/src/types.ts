@@ -468,7 +468,21 @@ export interface AdsCampaignLive {
   displayStatus?: string;
   /** Why it isn't serving (e.g. CREDIT_CARD_DECLINED) — see adsStatus.ts. */
   servingStateReasons?: string[];
+  /** The promoted app's App Store id. */
+  adamId?: number;
   dailyBudget?: { amount: number; currency: string } | null;
+  countries?: string[];
+}
+
+/** An app the create-campaign picker can offer, with where we know it from. */
+export interface AdsPromotableApp {
+  adamId: number;
+  name: string;
+  /** Store label when the app is already managed in a workspace store. */
+  store?: string;
+  /** True when the Apple Ads account itself lists the app as promotable. */
+  inAdsAccount: boolean;
+  /** Storefronts the app can serve in, when Apple provides them. */
   countries?: string[];
 }
 

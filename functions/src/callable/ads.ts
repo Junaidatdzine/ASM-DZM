@@ -9,6 +9,7 @@ import type {
   AdsKeywordLive,
   AdsMetricRow,
   AdsNegativeKeyword,
+  AdsPromotableApp,
 } from '@asm/shared';
 import { isEmulator } from '../config';
 import { defineCallable } from '../lib/wrap';
@@ -30,6 +31,8 @@ import {
   appleAdsKeywordReport,
   appleAdsKeywords,
   appleAdsNegativeKeywords,
+  appleAdsOrgCurrency,
+  appleAdsOwnedApps,
   appleAdsSearchTermsReport,
   appleAdsSetCampaignStatus,
   appleAdsUpdateAdGroup,
@@ -683,6 +686,59 @@ export const adsSearchTermsList = defineCallable(
     const creds = await appleCreds(input.accountId);
     const terms: AdsMetricRow[] = await appleAdsSearchTermsReport(creds, input.campaignId, input.adGroupId, ...reportWindow(input.days ?? 30)).catch(() => []);
     return { terms: terms.sort((a, b) => b.installs - a.installs || b.spendAmount - a.spendAmount) };
+  },
+);
+
+/**
+ * Everything the create-campaign dialog needs for one account: the apps it can
+ * promote (Apple's own list, checked against the API), every app already in
+ * the workspace stores, and the org's billing currency.
+ */
+export const adsCampaignSetup = defineCallable(
+  'adsCampaignSetup',
+  { input: z.object({ accountId: z.string().min(1) }), usesAscKey: true, timeoutSeconds: 60, authorize: (a) => requireAdmin(a) },
+  async (input) => {
+    const creds = await appleCreds(input.accountId);
+    const [ownedApps, currency, storesSnap] = await Promise.all([
+      appleAdsOwnedApps(creds).catch(() => null), // null = list unavailable, not "no apps"
+      appleAdsOrgCurrency(creds).catch(() => null),
+      db().collection('stores').get(),
+    ]);
+
+    const byAdamId = new Map<number, AdsPromotableApp>();
+    for (const app of ownedApps ?? []) {
+      byAdamId.set(app.adamId, {
+        adamId: app.adamId,
+        name: app.name,
+        inAdsAccount: true,
+        ...(app.countries?.length ? { countries: app.countries } : {}),
+      });
+    }
+    // Apps already managed in the workspace — numeric doc ids are App Store ids.
+    for (const storeDoc of storesSnap.docs) {
+      const storeName = (storeDoc.data() as { name?: string }).name ?? storeDoc.id;
+      const appsSnap = await refs.store(storeDoc.id).collection('apps').select('name').get();
+      for (const appDoc of appsSnap.docs) {
+        if (!/^\d+$/.test(appDoc.id)) continue;
+        const adamId = Number(appDoc.id);
+        const existing = byAdamId.get(adamId);
+        if (existing) {
+          if (!existing.store) existing.store = storeName;
+        } else {
+          byAdamId.set(adamId, {
+            adamId,
+            name: (appDoc.data() as { name?: string }).name ?? appDoc.id,
+            store: storeName,
+            inAdsAccount: false,
+          });
+        }
+      }
+    }
+
+    const apps = [...byAdamId.values()].sort(
+      (a, b) => Number(b.inAdsAccount) - Number(a.inAdsAccount) || a.name.localeCompare(b.name),
+    );
+    return { apps, currency, adsListChecked: ownedApps !== null };
   },
 );
 
