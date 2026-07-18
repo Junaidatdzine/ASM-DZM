@@ -1,0 +1,17 @@
+rules_version = '2';
+
+// Storage is used only as a screenshot staging area: the browser uploads an image to
+// staging/{uid}/…, then a Cloud Function streams it to App Store Connect and deletes it.
+// A bucket lifecycle rule additionally purges staging/ objects older than 1 day.
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /staging/{uid}/{fileId} {
+      allow read, delete: if request.auth != null && request.auth.uid == uid;
+      allow create: if request.auth != null && request.auth.uid == uid
+        && request.resource.size < 12 * 1024 * 1024
+        && request.resource.contentType.matches('image/(png|jpeg)')
+        && firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data.status == 'active';
+    }
+    match /{path=**} { allow read, write: if false; }
+  }
+}

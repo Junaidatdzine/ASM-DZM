@@ -1,0 +1,16 @@
+{
+  "name": "@asm/shared",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Pure-TS domain package shared by web and functions (no runtime deps)",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.3"
+  }
+}

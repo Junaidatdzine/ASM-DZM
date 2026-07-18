@@ -1,0 +1,125 @@
+@import '@fontsource-variable/inter';
+@import 'tailwindcss';
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  --background: oklch(0.985 0.002 247);
+  --card: oklch(1 0 0);
+  --popover: oklch(1 0 0);
+  --foreground: oklch(0.15 0.01 260);
+  --muted: oklch(0.955 0.004 250);
+  --muted-foreground: oklch(0.5 0.014 255);
+  --border: oklch(0.912 0.006 250);
+  --input: oklch(0.912 0.006 250);
+  /* Dzinemedia brand blue (#1C75BC) as the working accent. */
+  --primary: oklch(0.53 0.135 250);
+  --primary-foreground: oklch(0.985 0.002 247);
+  --accent: oklch(0.945 0.016 250);
+  --accent-foreground: oklch(0.33 0.09 250);
+  --destructive: oklch(0.577 0.215 27);
+  --destructive-foreground: oklch(0.985 0.002 247);
+  --success: oklch(0.578 0.132 155);
+  --warning: oklch(0.688 0.145 75);
+  --ring: oklch(0.53 0.135 250 / 45%);
+  --radius: 0.625rem;
+}
+
+.dark {
+  --background: oklch(0.165 0.007 262);
+  --card: oklch(0.205 0.008 262);
+  --popover: oklch(0.215 0.009 262);
+  --foreground: oklch(0.93 0.005 250);
+  --muted: oklch(0.245 0.009 262);
+  --muted-foreground: oklch(0.63 0.012 255);
+  --border: oklch(0.28 0.01 262);
+  --input: oklch(0.30 0.01 262);
+  --primary: oklch(0.65 0.125 250);
+  --primary-foreground: oklch(0.985 0.002 247);
+  --accent: oklch(0.27 0.035 250);
+  --accent-foreground: oklch(0.85 0.06 250);
+  --destructive: oklch(0.65 0.19 27);
+  --destructive-foreground: oklch(0.985 0.002 247);
+  --success: oklch(0.66 0.13 155);
+  --warning: oklch(0.75 0.14 75);
+  --ring: oklch(0.65 0.125 250 / 50%);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-card: var(--card);
+  --color-popover: var(--popover);
+  --color-foreground: var(--foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-ring: var(--ring);
+
+  --font-sans: 'Inter Variable', ui-sans-serif, system-ui, -apple-system, sans-serif;
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+
+  --shadow-card: 0 1px 2px 0 oklch(0 0 0 / 5%), 0 1px 6px -1px oklch(0 0 0 / 4%);
+  --shadow-pop: 0 4px 12px -2px oklch(0 0 0 / 10%), 0 12px 32px -6px oklch(0 0 0 / 12%);
+
+  --animate-in: enter 0.15s ease-out;
+  @keyframes enter {
+    from {
+      opacity: 0;
+      transform: translateY(2px) scale(0.99);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+}
+
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+  html {
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  body {
+    background: var(--background);
+    color: var(--foreground);
+    font-size: 0.875rem;
+    line-height: 1.5;
+  }
+  ::selection {
+    background: oklch(from var(--primary) l c h / 22%);
+  }
+  /* Slim, theme-aware scrollbars */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in oklab, var(--muted-foreground) 35%, transparent) transparent;
+  }
+  button {
+    cursor: pointer;
+  }
+  input,
+  textarea,
+  select {
+    font: inherit;
+  }
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 1px;
+  }
+}

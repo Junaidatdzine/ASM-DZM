@@ -1,0 +1,29 @@
+{
+  "name": "appstore-manager",
+  "private": true,
+  "version": "1.0.0",
+  "description": "App Store localization manager — multi-store ASC metadata, screenshots and AI translation on Firebase",
+  "scripts": {
+    "dev": "concurrently -n emu,fn,web -c blue,yellow,green \"pnpm emulators\" \"pnpm --filter functions build:watch\" \"pnpm --filter web dev\"",
+    "emulators": "node scripts/emulators.mjs",
+    "seed": "tsx scripts/seed.mts",
+    "build": "pnpm --filter functions build && pnpm --filter web build",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test",
+    "deploy": "firebase deploy --project appstoremanager-701cd"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2",
+    "firebase-tools": "^14.26.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild",
+      "@firebase/util",
+      "@google/genai",
+      "protobufjs"
+    ]
+  }
+}

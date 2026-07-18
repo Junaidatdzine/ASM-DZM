@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- Dzinemedia faceted "D" mark -->
+  <g stroke="#ffffff" stroke-width="3" stroke-linejoin="round">
+    <!-- upper-right edge -->
+    <polygon points="256,56 429,156 256,144" fill="#F7941D"/>
+    <polygon points="256,144 429,156 353,200" fill="#F15A22"/>
+    <!-- right edge -->
+    <polygon points="429,156 429,356 353,200" fill="#EE1C25"/>
+    <polygon points="353,200 429,356 353,312" fill="#BE1E2D"/>
+    <!-- lower-right edge -->
+    <polygon points="429,356 256,456 353,312" fill="#EC008C"/>
+    <polygon points="353,312 256,456 256,368" fill="#A3238E"/>
+    <!-- lower-left edge -->
+    <polygon points="256,456 83,356 256,368" fill="#662D91"/>
+    <polygon points="256,368 83,356 159,312" fill="#21409A"/>
+    <!-- left edge -->
+    <polygon points="83,356 83,156 159,312" fill="#1C75BC"/>
+    <polygon points="159,312 83,156 159,200" fill="#27AAE1"/>
+    <!-- upper-left edge -->
+    <polygon points="83,156 256,56 159,200" fill="#00A79D"/>
+    <polygon points="159,200 256,56 256,144" fill="#8DC63F"/>
+  </g>
+</svg>

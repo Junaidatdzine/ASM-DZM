@@ -1,0 +1,150 @@
+rules_version = '2';
+
+// Access model:
+//  - Clients may write ONLY: drafts (validated), their own userPrefs, their own accessRequest.
+//  - Every other write happens through Cloud Functions (Admin SDK bypasses rules).
+//  - Reads are gated on the caller's users/{uid} doc (status + role) and, for store data,
+//    on denormalized membership (stores.roles / stores.memberUids) so list queries are provable.
+service cloud.firestore {
+  match /databases/{db}/documents {
+
+    function signedIn() { return request.auth != null; }
+    function myDoc() { return get(/databases/$(db)/documents/users/$(request.auth.uid)).data; }
+    function isActive() {
+      return signedIn()
+        && exists(/databases/$(db)/documents/users/$(request.auth.uid))
+        && myDoc().status == 'active';
+    }
+    function isAdmin() { return isActive() && myDoc().role == 'admin'; }
+
+    function storeData(sid) { return get(/databases/$(db)/documents/stores/$(sid)).data; }
+    function isMember(sid) {
+      return isActive() && (isAdmin() || request.auth.uid in storeData(sid).roles);
+    }
+    function hasPermissionOverride(sid, action) {
+      return sid in myDoc().grants
+        && 'permissions' in myDoc().grants[sid]
+        && action in myDoc().grants[sid].permissions;
+    }
+    function permissionAllows(sid, action, roleDefault) {
+      return isAdmin() || (isActive()
+        && sid in myDoc().grants
+        && (hasPermissionOverride(sid, action)
+          ? myDoc().grants[sid].permissions[action] == true
+          : roleDefault));
+    }
+    // Draft editing is allowed for translator and above (push is enforced in functions).
+    function canEditStore(sid) {
+      return isActive() && (isAdmin()
+        || (request.auth.uid in storeData(sid).roles
+            && permissionAllows(
+              sid,
+              'editDrafts',
+              storeData(sid).roles[request.auth.uid] in ['translator', 'editor', 'developer', 'manager']
+            )));
+    }
+    // Per-app override map on the app doc; absent key = inherit store role.
+    function appAclAllowsEdit(sid, aid) {
+      let app = get(/databases/$(db)/documents/stores/$(sid)/apps/$(aid)).data;
+      return !('acl' in app) || !(request.auth.uid in app.acl)
+        || app.acl[request.auth.uid] in ['translator', 'editor', 'developer', 'manager'];
+    }
+
+    match /users/{uid} {
+      allow get: if isAdmin() || (signedIn() && request.auth.uid == uid);
+      allow list: if isAdmin();
+      allow write: if false; // functions only
+    }
+
+    match /userPrefs/{uid} {
+      // Admins read everyone's prefs for the presence (online/offline) view.
+      allow read, delete: if (signedIn() && request.auth.uid == uid) || isAdmin();
+      allow create, update: if signedIn() && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(['theme', 'lastStoreId', 'sidebarCollapsed', 'lastSeenAt']);
+    }
+
+    match /allowlist/{email} {
+      allow read: if isAdmin();
+      allow write: if false; // functions only (audited)
+    }
+
+    match /accessRequests/{uid} {
+      allow get: if isAdmin() || (signedIn() && request.auth.uid == uid);
+      allow list: if isAdmin();
+      allow create: if signedIn() && request.auth.uid == uid
+        && !exists(/databases/$(db)/documents/users/$(uid))
+        && request.resource.data.keys().hasOnly(['email', 'name', 'photoUrl', 'note', 'createdAt'])
+        && request.resource.data.email == request.auth.token.email;
+      allow update, delete: if false; // admin resolves via function
+    }
+
+    match /stores/{sid} {
+      allow get: if isMember(sid);
+      // list is provable only via where('memberUids','array-contains', uid) — or as admin.
+      allow list: if isAdmin()
+        || (isActive() && request.auth.uid in resource.data.memberUids);
+      allow write: if false;
+
+      // Financial data: admins, or members holding the explicit viewFinance grant
+      // for this store (no role includes it by default).
+      match /financeDays/{day} {
+        allow read: if isAdmin()
+          || (isMember(sid) && permissionAllows(sid, 'viewFinance', false));
+        allow write: if false;
+      }
+
+      match /apps/{aid} {
+        allow read: if isMember(sid);
+        allow write: if false;
+
+        match /locales/{locale} {
+          allow read: if isMember(sid);
+          allow write: if false; // cache is function-written
+        }
+
+        match /screenshotSets/{setKey} {
+          allow read: if isMember(sid);
+          allow write: if false; // all screenshot mutations via functions
+        }
+
+        match /drafts/{locale} {
+          allow read: if isMember(sid);
+          allow create, update: if canEditStore(sid) && appAclAllowsEdit(sid, aid)
+            && request.resource.data.updatedBy == request.auth.uid
+            && request.resource.data.keys()
+                 .hasOnly(['fields', 'base', 'meta', 'status', 'updatedBy', 'updatedAt'])
+            && request.resource.data.status == 'open' // only functions set 'pushing'
+            && request.resource.data.updatedAt == request.time;
+          allow delete: if canEditStore(sid) && appAclAllowsEdit(sid, aid);
+        }
+      }
+    }
+
+    match /operations/{opId} {
+      // get: owner, admin, or member of the op's store.
+      // list: provable when the query pins startedBy == uid or storeId == constant.
+      allow get, list: if isActive() && (
+        isAdmin()
+        || resource.data.startedBy == request.auth.uid
+        || (('storeId' in resource.data) && isMember(resource.data.storeId))
+      );
+      allow write: if false; // functions only
+    }
+
+    match /settings/{doc} {
+      allow read: if isActive();
+      allow write: if false; // admin writes via function
+    }
+
+    match /storeSecrets/{sid} { allow read, write: if false; }
+    match /auditLogs/{id} { allow read: if isAdmin(); allow write: if false; }
+
+    // Advertising: credentials are function-only; accounts/status/rollups are admin-only.
+    match /adsAccountSecrets/{id} { allow read, write: if false; }
+    match /adsAccounts/{id} { allow read: if isAdmin(); allow write: if false; }
+    match /adsConfig/{doc} { allow read: if isAdmin(); allow write: if false; }
+    match /adsDays/{day} { allow read: if isAdmin(); allow write: if false; }
+
+    match /{document=**} { allow read, write: if false; }
+  }
+}
