@@ -106,34 +106,56 @@ vi.mock('./lib/firestore', () => ({
 // Imported after the mock is registered.
 import { buildDailyReport } from './lib/report';
 
-describe('buildDailyReport — 7 & 30 day windows', () => {
-  it('renders 7-day headline figures with 30-day sub-totals and no per-day figures', async () => {
+describe('buildDailyReport — elegant 7 & 30 day report', () => {
+  it('renders a plain-English headline with explicit date ranges', async () => {
     const report = await buildDailyReport();
 
-    // Headline tiles are the 7-day totals; 30-day is the sub-line.
-    expect(report.html).toContain('Proceeds (7 days)');
+    // Newest fixture day is 2026-06-30, so 7d window = Jun 24–30, 30d = Jun 1–30.
+    expect(report.html).toContain('In the last 7 days (Jun 24 – 30), 2 stores earned');
+    expect(report.html).toContain('7-day window Jun 24 – 30 · 30-day window Jun 1 – 30');
+  });
+
+  it('shows 7-day headline metrics with 30-day totals and daily averages', async () => {
+    const report = await buildDailyReport();
+
+    expect(report.html).toContain('Proceeds · 7 days');
     expect(report.html).toContain('$210.00'); // 7-day proceeds
-    expect(report.html).toContain('$900.00 last 30 days'); // 30-day proceeds sub
-    expect(report.html).toContain('Downloads (7 days)');
-    expect(report.html).toContain('300 last 30 days'); // 30-day downloads sub
-    expect(report.html).toContain('Units (7 days)');
+    expect(report.html).toContain('$900.00 over 30 days · $30.00/day avg'); // 30d total + avg
+    expect(report.html).toContain('Downloads · 7 days');
+    expect(report.html).toContain('300 over 30 days · 10/day avg');
+    expect(report.html).toContain('Units · 7 days');
+  });
 
-    // Ads + net use the same 7d primary / 30d secondary pattern.
-    expect(report.html).toContain('Net (7 days)');
+  it('renders week-over-week trend chips (flat when the two windows match)', async () => {
+    const report = await buildDailyReport();
+    // The fixture is uniform, so this week equals the prior week → 0% chip.
+    expect(report.html).toContain('→ 0%');
+  });
+
+  it('summarises ads, net, a stores total row, and an explanatory legend', async () => {
+    const report = await buildDailyReport();
+
+    expect(report.html).toContain('Net · 7 days');
     expect(report.html).toContain('$203.00'); // net 7d = 210 + 7 admob - 14 spend
-    expect(report.html).toContain('$870.00 last 30 days'); // net 30d = 900 + 30 - 60
-    expect(report.html).toContain('21 installs/7d');
+    expect(report.html).toContain('$870.00 over 30 days'); // net 30d = 900 + 30 - 60
+    expect(report.html).toContain('21 installs');
 
-    // Store + app breakdowns carry both windows.
-    expect(report.html).toContain('Stores — 7 &amp; 30 days');
+    // Stores table has a bold "All stores" total row.
+    expect(report.html).toContain('All stores');
     expect(report.html).toContain('DE Store');
-    expect(report.html).toContain('Top apps — 7 &amp; 30 days');
+    expect(report.html).toContain('Top apps');
     expect(report.html).toContain('Alpha');
 
-    // The old per-day headline must be gone.
-    expect(report.html).not.toContain('(day)');
-    expect(report.html).not.toContain('Daily report ·');
+    // Legend explains the terms.
+    expect(report.html).toContain('How to read this.');
+    expect(report.html).toContain('proceeds + AdMob earnings − Apple Ads spend.');
 
+    // No stale per-day headline.
+    expect(report.html).not.toContain('(day)');
+  });
+
+  it('keeps a stable subject and summary for the audit trail', async () => {
+    const report = await buildDailyReport();
     expect(report.subject).toBe('Dzinemedia ASM · Report 2026-06-30 — $210.00 last 7d · $900.00 last 30d');
     expect(report.summary).toBe('$210.00 proceeds 7d · $900.00 30d · 70 downloads 7d · 2 stores');
   });
