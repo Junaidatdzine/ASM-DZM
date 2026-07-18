@@ -375,9 +375,10 @@ export const api = {
     { accountId: string; campaignsCount: number }
   >('adsAppleConnect'),
   admobConnect: call<
-    { label: string; clientId: string; clientSecret: string; code: string; redirectUri: string },
+    { label: string; clientId?: string; clientSecret?: string; code: string; redirectUri: string },
     { accountId: string; publisherId: string; currencyCode: string }
   >('admobConnect'),
+  admobOauthStatus: call<Record<string, never>, { configured: boolean; clientId?: string }>('admobOauthStatus'),
   adsAccountRemove: call<{ accountId: string }, Ok>('adsAccountRemove'),
   adsCampaignsList: call<Record<string, never>, { campaigns: AdsCampaignLive[]; errors: string[] }>('adsCampaignsList', 130_000),
   adsCampaignSetStatus: call<

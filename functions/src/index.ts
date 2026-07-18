@@ -71,6 +71,7 @@ export { financeSync } from './callable/finance';
 export { reportDaily, reportSendNow } from './callable/report';
 export {
   admobConnect,
+  admobOauthStatus,
   adsAccountRemove,
   adsAdGroupCreate,
   adsAdGroupUpdate,

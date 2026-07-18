@@ -570,20 +570,31 @@ function AdmobDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (o: 
   const [clientSecret, setClientSecret] = useState('');
   const redirectUri = `${window.location.origin}/oauth/admob`;
 
+  // After the first connection the OAuth client is saved server-side —
+  // connecting more AdMob accounts is just "sign in with Google".
+  const oauthQ = useQuery({
+    queryKey: ['admobOauthStatus'],
+    queryFn: () => api.admobOauthStatus({}),
+    enabled: open,
+    staleTime: 300_000,
+  });
+  const saved = oauthQ.data?.configured === true;
+
   const start = () => {
+    const useClientId = saved ? oauthQ.data!.clientId! : clientId.trim();
     const state = crypto.randomUUID();
     sessionStorage.setItem(
       'admob-oauth',
       JSON.stringify({
         label: label.trim() || 'AdMob',
-        clientId: clientId.trim(),
-        clientSecret: clientSecret.trim(),
+        // Omit credentials when the workspace client is saved — the server uses it.
+        ...(saved ? {} : { clientId: clientId.trim(), clientSecret: clientSecret.trim() }),
         state,
         redirectUri,
       }),
     );
     const url = new URL('https://accounts.google.com/o/oauth2/v2/auth');
-    url.searchParams.set('client_id', clientId.trim());
+    url.searchParams.set('client_id', useClientId);
     url.searchParams.set('redirect_uri', redirectUri);
     url.searchParams.set('response_type', 'code');
     url.searchParams.set('scope', 'https://www.googleapis.com/auth/admob.readonly');
@@ -593,36 +604,51 @@ function AdmobDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (o: 
     window.location.href = url.toString();
   };
 
+  const ready = saved || (clientId.trim().includes('.apps.googleusercontent.com') && clientSecret.trim().length >= 6);
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent wide>
         <DialogHeader
           title="Add an AdMob account"
-          description="One-time setup in Google Cloud console, then sign in with the Google account that owns AdMob. Repeat for each AdMob account."
+          description={
+            saved
+              ? 'Sign in with the Google account that owns the AdMob account — its data syncs automatically.'
+              : 'One-time setup in Google Cloud console — every AdMob account after this is just a Google sign-in.'
+          }
         />
         <div className="mb-3">
           <Label htmlFor="am-label">Name this account</Label>
           <Input id="am-label" value={label} placeholder="e.g. Main AdMob" onChange={(e) => setLabel(e.target.value)} />
         </div>
-        <ol className="list-decimal space-y-1.5 pl-5 text-[13px] text-muted-foreground">
-          <li>In <span className="font-medium text-foreground">console.cloud.google.com</span>, enable the <span className="font-medium text-foreground">AdMob API</span>.</li>
-          <li>Create an <span className="font-medium text-foreground">OAuth client ID → Web application</span> with this redirect URI:</li>
-        </ol>
-        <code className="mt-1 block select-all rounded-lg border bg-muted/40 px-3 py-2 text-[12px]">{redirectUri}</code>
-        <div className="mt-3 grid gap-3 sm:grid-cols-2">
-          <div>
-            <Label htmlFor="am-id">OAuth Client ID</Label>
-            <Input id="am-id" value={clientId} placeholder="xxxx.apps.googleusercontent.com" onChange={(e) => setClientId(e.target.value)} />
-          </div>
-          <div>
-            <Label htmlFor="am-secret">Client secret</Label>
-            <Input id="am-secret" type="password" value={clientSecret} placeholder="GOCSPX-…" onChange={(e) => setClientSecret(e.target.value)} autoComplete="off" />
-          </div>
-        </div>
-        <FieldHint>Read-only reporting access. The secret is stored encrypted server-side.</FieldHint>
+        {!saved && !oauthQ.isLoading && (
+          <>
+            <ol className="list-decimal space-y-1.5 pl-5 text-[13px] text-muted-foreground">
+              <li>In <span className="font-medium text-foreground">console.cloud.google.com</span>, enable the <span className="font-medium text-foreground">AdMob API</span>.</li>
+              <li>Create an <span className="font-medium text-foreground">OAuth client ID → Web application</span> with this redirect URI:</li>
+            </ol>
+            <code className="mt-1 block select-all rounded-lg border bg-muted/40 px-3 py-2 text-[12px]">{redirectUri}</code>
+            <div className="mt-3 grid gap-3 sm:grid-cols-2">
+              <div>
+                <Label htmlFor="am-id">OAuth Client ID</Label>
+                <Input id="am-id" value={clientId} placeholder="xxxx.apps.googleusercontent.com" onChange={(e) => setClientId(e.target.value)} />
+              </div>
+              <div>
+                <Label htmlFor="am-secret">Client secret</Label>
+                <Input id="am-secret" type="password" value={clientSecret} placeholder="GOCSPX-…" onChange={(e) => setClientSecret(e.target.value)} autoComplete="off" />
+              </div>
+            </div>
+            <FieldHint>Read-only reporting access. Saved once, encrypted server-side — you won’t enter this again.</FieldHint>
+          </>
+        )}
+        {saved && (
+          <p className="text-[13px] text-muted-foreground">
+            Google will ask which account to use — pick the one that owns this AdMob account and approve read-only reporting access.
+          </p>
+        )}
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
-          <Button onClick={start} disabled={!clientId.trim().includes('.apps.googleusercontent.com') || clientSecret.trim().length < 6}>
+          <Button onClick={start} disabled={!ready || oauthQ.isLoading}>
             Continue with Google
           </Button>
         </DialogFooter>

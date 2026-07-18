@@ -35,8 +35,9 @@ export function OauthAdmobPage() {
     }
     const { label, clientId, clientSecret, state: expectedState, redirectUri } = JSON.parse(stashed) as {
       label?: string;
-      clientId: string;
-      clientSecret: string;
+      // Absent when the workspace OAuth client is already saved server-side.
+      clientId?: string;
+      clientSecret?: string;
       state: string;
       redirectUri: string;
     };

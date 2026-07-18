@@ -351,13 +351,42 @@ export const adsAppleConnect = defineCallable(
   },
 );
 
+/**
+ * Workspace-wide Google OAuth client for AdMob, stored once in the function-only
+ * secrets collection. After the first manual setup every further AdMob account
+ * is just "sign in with Google" — no Cloud-console round trip.
+ */
+const ADMOB_OAUTH_DOC = 'admobOauthClient';
+interface AdmobOauthClientDoc {
+  clientId: string;
+  clientSecret: Encrypted;
+}
+async function loadAdmobOauthClient(): Promise<{ clientId: string; clientSecret: string } | null> {
+  const snap = await refs.adsAccountSecret(ADMOB_OAUTH_DOC).get();
+  if (!snap.exists) return null;
+  const doc = snap.data() as AdmobOauthClientDoc;
+  return { clientId: doc.clientId, clientSecret: decryptSecret(doc.clientSecret, `ads:${ADMOB_OAUTH_DOC}`) };
+}
+
+/** Is one-click AdMob connect available? (client ID is public; the secret never leaves the server.) */
+export const admobOauthStatus = defineCallable(
+  'admobOauthStatus',
+  { usesAscKey: true, authorize: (actor) => requireAdmin(actor) },
+  async () => {
+    if (isEmulator()) return { configured: true, clientId: 'mock.apps.googleusercontent.com' };
+    const client = await loadAdmobOauthClient();
+    return client ? { configured: true as const, clientId: client.clientId } : { configured: false as const };
+  },
+);
+
 export const admobConnect = defineCallable(
   'admobConnect',
   {
     input: z.object({
       label: z.string().trim().min(1).max(60),
-      clientId: z.string().trim().min(10).max(300),
-      clientSecret: z.string().trim().min(6).max(300),
+      // Optional after the first connection — the saved workspace client is used.
+      clientId: z.string().trim().min(10).max(300).optional(),
+      clientSecret: z.string().trim().min(6).max(300).optional(),
       code: z.string().trim().min(4).max(1000),
       redirectUri: z.string().trim().url().max(300),
     }),
@@ -370,14 +399,33 @@ export const admobConnect = defineCallable(
     }),
   },
   async (input, actor) => {
+    let clientId = input.clientId;
+    let clientSecret = input.clientSecret;
+    if (!clientId || !clientSecret) {
+      const saved = await loadAdmobOauthClient();
+      if (!saved) {
+        throw new AppError(
+          'failed-precondition',
+          'No Google OAuth client is saved yet — enter the Client ID and secret once (Google Cloud console → AdMob API), and future connections become one-click.',
+        );
+      }
+      clientId = saved.clientId;
+      clientSecret = saved.clientSecret;
+    } else if (!isEmulator()) {
+      // First manual setup doubles as the workspace-wide save.
+      await refs.adsAccountSecret(ADMOB_OAUTH_DOC).set({
+        clientId,
+        clientSecret: encryptSecret(clientSecret, `ads:${ADMOB_OAUTH_DOC}`),
+      } satisfies AdmobOauthClientDoc);
+    }
     const refreshToken = isEmulator()
       ? 'mock-refresh-token'
-      : await admobExchangeCode(input.clientId, input.clientSecret, input.code, input.redirectUri);
-    const account = await admobAccount({ clientId: input.clientId, clientSecret: input.clientSecret, refreshToken });
+      : await admobExchangeCode(clientId, clientSecret, input.code, input.redirectUri);
+    const account = await admobAccount({ clientId, clientSecret, refreshToken });
     const accountRef = refs.adsAccounts().doc();
     await refs.adsAccountSecret(accountRef.id).set({
-      clientId: input.clientId,
-      clientSecret: encryptSecret(input.clientSecret, `ads:${accountRef.id}`),
+      clientId,
+      clientSecret: encryptSecret(clientSecret, `ads:${accountRef.id}`),
       refreshToken: encryptSecret(refreshToken, `ads:${accountRef.id}`),
       publisherId: account.publisherId,
       currencyCode: account.currencyCode,
